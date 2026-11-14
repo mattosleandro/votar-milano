@@ -1,0 +1,635 @@
+'use client';
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import {
+  AlertCircle,
+  Building2,
+  CheckCircle2,
+  Database,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileSpreadsheet,
+  KeyRound,
+  ListChecks,
+  Lock,
+  RefreshCw,
+  Settings2,
+  ShieldAlert,
+  Wifi,
+  WifiOff,
+  X,
+} from 'lucide-react';
+import { MilanoLogo } from '@/components/MilanoLogo';
+import { AdminCadastroUnidadesSection } from '@/components/admin/AdminCadastroUnidadesSection';
+import { AdminConstrutoraSection } from '@/components/admin/AdminConstrutoraSection';
+import { AdminConvocacoesSection } from '@/components/admin/AdminConvocacoesSection';
+import { AdminInadimplentesSection } from '@/components/admin/AdminInadimplentesSection';
+import { AdminPautasSection } from '@/components/admin/AdminPautasSection';
+import { AdminPresencasCsvSection } from '@/components/admin/AdminPresencasCsvSection';
+import {
+  ResultadoOperacaoAdmin,
+  useAssembleiaAdminRealtime,
+} from '@/hooks/useAssembleiaAdminRealtime';
+import { ADMIN_PIN_CONFIGURADO, ADMIN_SENHA_INTERNA } from '@/lib/supabase';
+
+const CHAVE_SESSAO_ADMIN = 'votar_milano_admin_unlocked_v2';
+
+type AbaAdmin =
+  | 'CONVOCACOES'
+  | 'CADASTRO_BASE'
+  | 'PAUTAS'
+  | 'CONSTRUTORA'
+  | 'INADIMPLENTES'
+  | 'PRESENCAS_CSV';
+
+interface NotificacaoAdmin extends ResultadoOperacaoAdmin {
+  id: number;
+}
+
+export default function PaginaAdminMesa() {
+  const [verificandoSessao, setVerificandoSessao] = useState(true);
+  const [autenticado, setAutenticado] = useState(false);
+  const [senhaDigitada, setSenhaDigitada] = useState('');
+  const [mostrarSenha, setMostrarSenha] = useState(false);
+  const [erroSenha, setErroSenha] = useState<string | null>(null);
+
+  const [abaAtiva, setAbaAtiva] = useState<AbaAdmin>('CONVOCACOES');
+  const [notificacao, setNotificacao] = useState<NotificacaoAdmin | null>(null);
+
+  useEffect(() => {
+    try {
+      const salvo = window.sessionStorage.getItem(CHAVE_SESSAO_ADMIN);
+      if (salvo === 'true') {
+        setAutenticado(true);
+      }
+    } catch {
+      // sessionStorage indisponível
+    } finally {
+      setVerificandoSessao(false);
+    }
+  }, []);
+
+  const notificar = useCallback((res: ResultadoOperacaoAdmin) => {
+    const id = Date.now();
+    setNotificacao({ ...res, id });
+  }, []);
+
+  useEffect(() => {
+    if (!notificacao) return;
+    const timer = window.setTimeout(() => {
+      setNotificacao((atual) => (atual?.id === notificacao.id ? null : atual));
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [notificacao]);
+
+  const {
+    config,
+    unidadesCadastradas,
+    presencas,
+    inadimplentes,
+    pautas,
+    votos,
+    historicoAssembleias,
+    pautaAberta,
+    carregandoInicial,
+    erroConexao,
+    statusConexao,
+    recarregarTudo,
+    salvarConfiguracao,
+    controlarTimerTelao,
+    salvarUnidadeBase,
+    importarUnidadesBaseEmLote,
+    alternarInadimplenciaUnidadeBase,
+    removerUnidadeBase,
+    criarPauta,
+    abrirPauta,
+    encerrarPauta,
+    resetarPauta,
+    excluirPauta,
+    adicionarUnidadesConstrutora,
+    removerUnidadesConstrutora,
+    votarEmLoteConstrutora,
+    adicionarUnidadesInadimplentes,
+    removerUnidadesInadimplentes,
+    credenciarManualMesa,
+    atualizarPresencaMesa,
+    removerPresencaMesa,
+    salvarAssembleiaNoHistorico,
+    resetarAssembleiaParaNova,
+    excluirAssembleiaDoHistorico,
+  } = useAssembleiaAdminRealtime(autenticado);
+
+  const handleAutenticarSenha = (e: React.FormEvent) => {
+    e.preventDefault();
+    const digitada = senhaDigitada.trim();
+    if (digitada === ADMIN_SENHA_INTERNA || digitada === ADMIN_PIN_CONFIGURADO) {
+      setAutenticado(true);
+      setErroSenha(null);
+      setSenhaDigitada('');
+      try {
+        window.sessionStorage.setItem(CHAVE_SESSAO_ADMIN, 'true');
+      } catch {
+        // ignora
+      }
+    } else {
+      setErroSenha(
+        'Senha administrativa incorreta. Verifique a senha de 10 caracteres da Mesa Diretora.'
+      );
+    }
+  };
+
+  const handleBloquearPainel = () => {
+    setAutenticado(false);
+    try {
+      window.sessionStorage.removeItem(CHAVE_SESSAO_ADMIN);
+    } catch {
+      // ignora
+    }
+  };
+
+  const contadores = useMemo(() => {
+    let construtora = 0;
+    for (const p of presencas) {
+      if (p.is_construtora) construtora += 1;
+    }
+    return {
+      totalPresentes: presencas.length,
+      moradores: presencas.length - construtora,
+      construtora,
+    };
+  }, [presencas]);
+
+  if (verificandoSessao) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0C0C0D]">
+        <MilanoLogo variant="mark" className="h-14 w-auto animate-pulse" />
+      </div>
+    );
+  }
+
+  // ===========================================================================
+  // TELA DE AUTENTICAÇÃO POR SENHA FORTE DE 10 CARACTERES (MESA DIRETORA)
+  // ===========================================================================
+  if (!autenticado) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center bg-[#0C0C0D] px-4 py-10 text-white">
+        <div className="w-full max-w-md rounded-3xl border border-[#CCB285]/30 bg-[#141518] p-8 shadow-2xl">
+          <div className="flex flex-col items-center text-center">
+            <MilanoLogo variant="dark" className="h-12 w-auto" />
+            <span className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[#CCB285]/40 bg-[#CCB285]/10 px-3 py-1 text-[11px] font-extrabold uppercase tracking-widest text-[#CCB285]">
+              <Lock className="h-3.5 w-3.5" />
+              Acesso Restrito • Mesa Diretora
+            </span>
+            <h1 className="mt-3 text-xl font-extrabold text-white">
+              Painel de Controle e Auditoria
+            </h1>
+            <p className="mt-1 text-xs text-slate-400">
+              Informe a senha de segurança de 10 caracteres da Mesa Diretora para gerenciar quórum,
+              cadastro base de condôminos, inadimplentes, pautas e relatórios CSV.
+            </p>
+          </div>
+
+          <form onSubmit={handleAutenticarSenha} className="mt-6 space-y-4">
+            <div>
+              <label
+                htmlFor="admin-password"
+                className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-300"
+              >
+                Senha da Mesa Diretora (10 caracteres)
+              </label>
+              <div className="relative">
+                <KeyRound className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-[#CCB285]" />
+                <input
+                  id="admin-password"
+                  type={mostrarSenha ? 'text' : 'password'}
+                  autoFocus
+                  required
+                  value={senhaDigitada}
+                  onChange={(e) => {
+                    setSenhaDigitada(e.target.value);
+                    if (erroSenha) setErroSenha(null);
+                  }}
+                  placeholder="••••••••••"
+                  className="w-full rounded-xl border border-slate-700 bg-[#0C0C0D] py-3 pl-10 pr-11 text-center font-mono text-base font-extrabold tracking-widest text-white focus:border-[#CCB285] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/30"
+                />
+                <button
+                  type="button"
+                  onClick={() => setMostrarSenha((v) => !v)}
+                  aria-label="Mostrar ou ocultar senha"
+                  className="absolute right-3 top-3 text-slate-400 hover:text-white"
+                >
+                  {mostrarSenha ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {erroSenha && (
+              <div className="flex items-center gap-2 rounded-xl border border-rose-500/40 bg-rose-950/60 px-3.5 py-2.5 text-xs font-semibold text-rose-200">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
+                <span>{erroSenha}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="w-full rounded-xl bg-[#CCB285] py-3.5 text-sm font-black uppercase tracking-wider text-[#0C0C0D] shadow-lg transition hover:bg-[#DFCCA9]"
+            >
+              Desbloquear Console da Mesa
+            </button>
+          </form>
+
+          <div className="mt-6 flex items-center justify-center gap-4 border-t border-slate-800 pt-4 text-xs text-slate-400">
+            <Link href="/" className="hover:text-[#CCB285]">
+              Ir para Check-in (/)
+            </Link>
+            <span>•</span>
+            <Link href="/telao" className="hover:text-[#CCB285]">
+              Abrir Telão (/telao)
+            </Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  // ===========================================================================
+  // CONSOLE OPERACIONAL DA MESA DIRETORA (/admin)
+  // ===========================================================================
+  const ABAS: {
+    id: AbaAdmin;
+    rotulo: string;
+    icone: React.ReactNode;
+    contador?: number;
+  }[] = [
+    {
+      id: 'CONVOCACOES',
+      rotulo: '1. Quórum, Horários & Timer',
+      icone: <Settings2 className="h-4 w-4" />,
+    },
+    {
+      id: 'CADASTRO_BASE',
+      rotulo: '2. Cadastro Geral & Inadimplentes',
+      icone: <Database className="h-4 w-4" />,
+      contador: unidadesCadastradas.length,
+    },
+    {
+      id: 'PAUTAS',
+      rotulo: '3. Pautas & Votação',
+      icone: <ListChecks className="h-4 w-4" />,
+      contador: pautas.length,
+    },
+    {
+      id: 'CONSTRUTORA',
+      rotulo: '4. Construtora',
+      icone: <Building2 className="h-4 w-4" />,
+      contador: contadores.construtora,
+    },
+    {
+      id: 'INADIMPLENTES',
+      rotulo: '5. Grade Inadimplentes',
+      icone: <ShieldAlert className="h-4 w-4" />,
+      contador: inadimplentes.length,
+    },
+    {
+      id: 'PRESENCAS_CSV',
+      rotulo: '6. Presenças, Aparelhos & CSV',
+      icone: <FileSpreadsheet className="h-4 w-4" />,
+      contador: contadores.totalPresentes,
+    },
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#F6F5F1] text-slate-900">
+      {/* Cabeçalho Institucional Escuro */}
+      <header className="sticky top-0 z-30 border-b border-[#CCB285]/30 bg-[#0C0C0D] text-white shadow-md">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
+          <div className="flex items-center gap-3.5">
+            <MilanoLogo variant="dark" className="h-9 w-auto sm:h-10" />
+            <div className="hidden h-7 w-px bg-slate-800 sm:block" />
+            <div>
+              <div className="text-xs font-extrabold uppercase tracking-wider text-[#CCB285]">
+                Console da Mesa Diretora
+              </div>
+              <div className="text-[11px] text-slate-400">
+                Milano Condomínio Club
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Status de Check-in Público */}
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-extrabold ${
+                config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA'
+                  ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
+                  : 'border-rose-500/40 bg-rose-950/60 text-rose-300'
+              }`}
+            >
+              {config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA'
+                ? 'Check-in Liberado (/)'
+                : 'Check-in Bloqueado (/)'}
+            </span>
+
+            {/* Indicador Realtime */}
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${
+                statusConexao === 'AO_VIVO'
+                  ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
+                  : 'border-amber-500/40 bg-amber-950/60 text-amber-300'
+              }`}
+            >
+              {statusConexao === 'AO_VIVO' ? (
+                <Wifi className="h-3.5 w-3.5" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5" />
+              )}
+              {statusConexao === 'AO_VIVO' ? 'Realtime Ativo' : 'Reconectando...'}
+            </span>
+
+            <button
+              type="button"
+              onClick={() => void recarregarTudo()}
+              title="Ressincronizar dados agora"
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-200 transition hover:border-[#CCB285] hover:text-white"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Sincronizar</span>
+            </button>
+
+            <Link
+              href="/telao"
+              target="_blank"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#CCB285] px-3.5 py-1.5 text-xs font-black uppercase tracking-wide text-[#0C0C0D] transition hover:bg-[#DFCCA9]"
+            >
+              Abrir Telão
+              <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+
+            <button
+              type="button"
+              onClick={handleBloquearPainel}
+              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-rose-500 hover:text-rose-300"
+            >
+              <Lock className="h-3.5 w-3.5" />
+              Sair
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+        {/* Toast / Banner de Feedback */}
+        {notificacao && (
+          <div
+            role="status"
+            className={`flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold shadow-sm sm:text-sm ${
+              notificacao.ok
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
+                : 'border-rose-300 bg-rose-50 text-rose-950'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {notificacao.ok ? (
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+              ) : (
+                <AlertCircle className="h-5 w-5 shrink-0 text-rose-600" />
+              )}
+              <span>{notificacao.mensagem}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNotificacao(null)}
+              aria-label="Fechar notificação"
+              className="rounded-lg p-1 hover:bg-black/5"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {erroConexao && (
+          <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-900">
+            Erro de sincronização com o Supabase: {erroConexao}
+          </div>
+        )}
+
+        {/* Faixa de Indicadores Rápidos (KPIs ao Vivo) */}
+        <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Base Cadastrada
+            </div>
+            <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900 tabular-nums">
+              {unidadesCadastradas.length}
+              <span className="text-xs font-semibold text-slate-400"> / 544</span>
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              Unidades no banco
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Presentes (Check-in)
+            </div>
+            <div className="mt-1 font-mono text-2xl font-extrabold text-emerald-700 tabular-nums">
+              {contadores.totalPresentes}
+              <span className="text-xs font-semibold text-slate-400"> / 544</span>
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              {contadores.moradores} morad. • {contadores.construtora} const.
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Convocação &amp; Quórum
+            </div>
+            <div className="mt-1 text-sm font-extrabold text-slate-900">
+              {!config.assembleia_ativa
+                ? 'Não Salvo (Bloqueado)'
+                : config.convocacao_ativa === 'PRIMEIRA'
+                  ? `1ª Conv. (${config.horario_primeira_convocacao})`
+                  : config.convocacao_ativa === 'SEGUNDA'
+                    ? `2ª Conv. (${config.horario_segunda_convocacao})`
+                    : config.convocacao_ativa === 'ENCERRADA'
+                      ? 'Encerrada'
+                      : `Aguardando (${config.horario_primeira_convocacao})`}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              Escopo: {config.escopo_assembleia}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Unid. Construtora
+            </div>
+            <div className="mt-1 font-mono text-2xl font-extrabold text-[#A88E61] tabular-nums">
+              {contadores.construtora}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              1 voto por apto
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Inadimplentes (Total)
+            </div>
+            <div className="mt-1 font-mono text-2xl font-extrabold text-rose-600 tabular-nums">
+              {config.total_inadimplentes}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              Apenas nº total é público
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+              Pauta Aberta
+            </div>
+            <div className="mt-1 truncate text-sm font-extrabold text-slate-900">
+              {pautaAberta
+                ? `#${String(pautaAberta.ordem).padStart(2, '0')} — ${pautaAberta.titulo}`
+                : 'Nenhuma aberta'}
+            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">
+              {pautas.length} pauta(s)
+            </div>
+          </div>
+        </section>
+
+        {/* Navegação por Abas Operacionais */}
+        <nav
+          aria-label="Seções do painel da Mesa"
+          className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm"
+        >
+          {ABAS.map((aba) => {
+            const ativa = abaAtiva === aba.id;
+            return (
+              <button
+                key={aba.id}
+                type="button"
+                onClick={() => setAbaAtiva(aba.id)}
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-extrabold transition sm:text-sm ${
+                  ativa
+                    ? 'bg-[#0C0C0D] text-[#CCB285] shadow-sm'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                {aba.icone}
+                <span>{aba.rotulo}</span>
+                {typeof aba.contador === 'number' && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-mono text-[11px] tabular-nums ${
+                      ativa
+                        ? 'bg-[#CCB285]/20 text-white'
+                        : 'bg-slate-200/80 text-slate-700'
+                    }`}
+                  >
+                    {aba.contador}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Conteúdo da Aba Selecionada */}
+        {carregandoInicial ? (
+          <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-sm font-semibold text-slate-500">
+            Carregando dados da Assembleia em tempo real...
+          </div>
+        ) : (
+          <>
+            {abaAtiva === 'CONVOCACOES' && (
+              <AdminConvocacoesSection
+                config={config}
+                presencas={presencas}
+                pautas={pautas}
+                votos={votos}
+                historicoAssembleias={historicoAssembleias}
+                onSalvarConfig={salvarConfiguracao}
+                onControlarTimer={controlarTimerTelao}
+                onSalvarAssembleia={salvarAssembleiaNoHistorico}
+                onResetarAssembleia={resetarAssembleiaParaNova}
+                onExcluirHistorico={excluirAssembleiaDoHistorico}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'CADASTRO_BASE' && (
+              <AdminCadastroUnidadesSection
+                unidades={unidadesCadastradas}
+                onSalvarUnidade={salvarUnidadeBase}
+                onImportarLote={importarUnidadesBaseEmLote}
+                onAlternarInadimplencia={alternarInadimplenciaUnidadeBase}
+                onRemoverUnidade={removerUnidadeBase}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'PAUTAS' && (
+              <AdminPautasSection
+                config={config}
+                pautas={pautas}
+                presencas={presencas}
+                votos={votos}
+                onCriarPauta={criarPauta}
+                onAbrirPauta={abrirPauta}
+                onEncerrarPauta={encerrarPauta}
+                onResetarPauta={resetarPauta}
+                onExcluirPauta={excluirPauta}
+                onControlarTimer={controlarTimerTelao}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'CONSTRUTORA' && (
+              <AdminConstrutoraSection
+                presencas={presencas}
+                inadimplentes={inadimplentes}
+                pautaAberta={pautaAberta}
+                votos={votos}
+                onAdicionarConstrutora={adicionarUnidadesConstrutora}
+                onRemoverConstrutora={removerUnidadesConstrutora}
+                onVotarEmLoteConstrutora={votarEmLoteConstrutora}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'INADIMPLENTES' && (
+              <AdminInadimplentesSection
+                config={config}
+                inadimplentes={inadimplentes}
+                presencas={presencas}
+                onAdicionarInadimplentes={adicionarUnidadesInadimplentes}
+                onRemoverInadimplentes={removerUnidadesInadimplentes}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'PRESENCAS_CSV' && (
+              <AdminPresencasCsvSection
+                presencas={presencas}
+                pautas={pautas}
+                votos={votos}
+                onCredenciarManual={credenciarManualMesa}
+                onAtualizarPresenca={atualizarPresencaMesa}
+                onRemoverPresenca={removerPresencaMesa}
+                onNotificar={notificar}
+              />
+            )}
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
