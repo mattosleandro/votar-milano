@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Settings2,
   ShieldAlert,
+  UserCheck,
   Wifi,
   WifiOff,
   X,
@@ -27,6 +28,7 @@ import { AdminConstrutoraSection } from '@/components/admin/AdminConstrutoraSect
 import { AdminConvocacoesSection } from '@/components/admin/AdminConvocacoesSection';
 import { AdminInadimplentesSection } from '@/components/admin/AdminInadimplentesSection';
 import { AdminPautasSection } from '@/components/admin/AdminPautasSection';
+import { AdminPortariaSection } from '@/components/admin/AdminPortariaSection';
 import { AdminPresencasCsvSection } from '@/components/admin/AdminPresencasCsvSection';
 import {
   ResultadoOperacaoAdmin,
@@ -38,6 +40,7 @@ const CHAVE_SESSAO_ADMIN = 'votar_milano_admin_unlocked_v2';
 
 type AbaAdmin =
   | 'CONVOCACOES'
+  | 'PORTARIA'
   | 'CADASTRO_BASE'
   | 'PAUTAS'
   | 'CONSTRUTORA'
@@ -113,6 +116,7 @@ export default function PaginaAdminMesa() {
     votarEmLoteConstrutora,
     adicionarUnidadesInadimplentes,
     removerUnidadesInadimplentes,
+    confirmarPresencaPortaria,
     credenciarManualMesa,
     atualizarPresencaMesa,
     removerPresencaMesa,
@@ -273,32 +277,38 @@ export default function PaginaAdminMesa() {
       icone: <Settings2 className="h-4 w-4" />,
     },
     {
+      id: 'PORTARIA',
+      rotulo: '2. Portaria / Entrada (CPF)',
+      icone: <UserCheck className="h-4 w-4" />,
+      contador: contadores.moradores,
+    },
+    {
       id: 'CADASTRO_BASE',
-      rotulo: '2. Cadastro Geral & Inadimplentes',
+      rotulo: '3. Cadastro Geral & Inadimplentes',
       icone: <Database className="h-4 w-4" />,
       contador: unidadesCadastradas.length,
     },
     {
       id: 'PAUTAS',
-      rotulo: '3. Pautas & Votação',
+      rotulo: '4. Pautas & Votação',
       icone: <ListChecks className="h-4 w-4" />,
       contador: pautas.length,
     },
     {
       id: 'CONSTRUTORA',
-      rotulo: '4. Construtora',
+      rotulo: '5. Construtora',
       icone: <Building2 className="h-4 w-4" />,
       contador: contadores.construtora,
     },
     {
       id: 'INADIMPLENTES',
-      rotulo: '5. Grade Inadimplentes',
+      rotulo: '6. Grade Inadimplentes',
       icone: <ShieldAlert className="h-4 w-4" />,
       contador: inadimplentes.length,
     },
     {
       id: 'PRESENCAS_CSV',
-      rotulo: '6. Presenças, Aparelhos & CSV',
+      rotulo: '7. Presenças, Aparelhos & CSV',
       icone: <FileSpreadsheet className="h-4 w-4" />,
       contador: contadores.totalPresentes,
     },
@@ -361,6 +371,15 @@ export default function PaginaAdminMesa() {
               <RefreshCw className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">Sincronizar</span>
             </button>
+
+            <Link
+              href="/portaria"
+              target="_blank"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#CCB285]/60 bg-[#CCB285]/15 px-3 py-1.5 text-xs font-extrabold text-[#CCB285] transition hover:bg-[#CCB285]/25"
+            >
+              <UserCheck className="h-3.5 w-3.5" />
+              Tela Portaria (/portaria)
+            </Link>
 
             <Link
               href="/telao"
@@ -561,6 +580,18 @@ export default function PaginaAdminMesa() {
                 onSalvarAssembleia={salvarAssembleiaNoHistorico}
                 onResetarAssembleia={resetarAssembleiaParaNova}
                 onExcluirHistorico={excluirAssembleiaDoHistorico}
+                onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'PORTARIA' && (
+              <AdminPortariaSection
+                config={config}
+                unidades={unidadesCadastradas}
+                presencas={presencas}
+                inadimplentes={inadimplentes}
+                onConfirmarPortaria={confirmarPresencaPortaria}
+                onRemoverPresenca={removerPresencaMesa}
                 onNotificar={notificar}
               />
             )}

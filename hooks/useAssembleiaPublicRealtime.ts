@@ -28,6 +28,7 @@ const DEFAULT_INADIMPLENTES_ESCOPO: MapaInadimplentesPorEscopo = {
 export const DEFAULT_ASSEMBLEIA_CONFIG: AssembleiaConfig = {
   id: 1,
   assembleia_ativa: false,
+  exigir_confirmacao_portaria: true,
   convocacao_ativa: 'AGUARDANDO',
   horario_primeira_convocacao: '19:00',
   horario_segunda_convocacao: '19:30',
@@ -70,6 +71,12 @@ function sanitizarPresencaPublica(raw: Record<string, unknown>): PresencaPublica
               ? 3
               : 4,
     is_construtora: Boolean(raw.is_construtora),
+    confirmado_portaria:
+      typeof raw.confirmado_portaria === 'boolean' ? raw.confirmado_portaria : true,
+    online_conectado:
+      typeof raw.online_conectado === 'boolean'
+        ? raw.online_conectado
+        : Boolean(raw.is_construtora),
     created_at: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
   };
 }
@@ -81,6 +88,10 @@ function normalizarConfig(raw: Record<string, unknown> | null): AssembleiaConfig
   return {
     id: 1,
     assembleia_ativa: Boolean(raw.assembleia_ativa),
+    exigir_confirmacao_portaria:
+      typeof raw.exigir_confirmacao_portaria === 'boolean'
+        ? raw.exigir_confirmacao_portaria
+        : true,
     convocacao_ativa:
       (raw.convocacao_ativa as AssembleiaConfig['convocacao_ativa']) || 'AGUARDANDO',
     horario_primeira_convocacao:
@@ -138,13 +149,15 @@ export function useAssembleiaPublicRealtime(channelPrefix = 'public') {
         supabase
           .from('assembleia_config')
           .select(
-            'id, assembleia_ativa, convocacao_ativa, horario_primeira_convocacao, horario_segunda_convocacao, escopo_assembleia, descontar_inadimplentes_quorum, total_inadimplentes, inadimplentes_por_escopo, timer_duration_seconds, timer_started_at, timer_running, updated_at'
+            'id, assembleia_ativa, exigir_confirmacao_portaria, convocacao_ativa, horario_primeira_convocacao, horario_segunda_convocacao, escopo_assembleia, descontar_inadimplentes_quorum, total_inadimplentes, inadimplentes_por_escopo, timer_duration_seconds, timer_started_at, timer_running, updated_at'
           )
           .eq('id', 1)
           .maybeSingle(),
         supabase
           .from('assembleia_presencas')
-          .select('id, bloco, apartamento, fase, modulo, is_construtora, created_at')
+          .select(
+            'id, bloco, apartamento, fase, modulo, is_construtora, confirmado_portaria, online_conectado, created_at'
+          )
           .order('bloco', { ascending: true })
           .order('apartamento', { ascending: true }),
         supabase

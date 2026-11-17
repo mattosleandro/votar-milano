@@ -27,6 +27,10 @@ function normalizarConfigAdmin(raw: Record<string, unknown> | null): AssembleiaC
   return {
     id: 1,
     assembleia_ativa: Boolean(raw.assembleia_ativa),
+    exigir_confirmacao_portaria:
+      typeof raw.exigir_confirmacao_portaria === 'boolean'
+        ? raw.exigir_confirmacao_portaria
+        : true,
     convocacao_ativa:
       (raw.convocacao_ativa as AssembleiaConfig['convocacao_ativa']) || 'AGUARDANDO',
     horario_primeira_convocacao:
@@ -123,7 +127,7 @@ export function useAssembleiaAdminRealtime(autenticado: boolean) {
         supabase
           .from('assembleia_config')
           .select(
-            'id, assembleia_ativa, convocacao_ativa, horario_primeira_convocacao, horario_segunda_convocacao, escopo_assembleia, descontar_inadimplentes_quorum, total_inadimplentes, inadimplentes_por_escopo, timer_duration_seconds, timer_started_at, timer_running, updated_at'
+            'id, assembleia_ativa, exigir_confirmacao_portaria, convocacao_ativa, horario_primeira_convocacao, horario_segunda_convocacao, escopo_assembleia, descontar_inadimplentes_quorum, total_inadimplentes, inadimplentes_por_escopo, timer_duration_seconds, timer_started_at, timer_running, updated_at'
           )
           .eq('id', 1)
           .maybeSingle(),
@@ -137,7 +141,7 @@ export function useAssembleiaAdminRealtime(autenticado: boolean) {
         supabase
           .from('assembleia_presencas')
           .select(
-            'id, bloco, apartamento, fase, modulo, nome_completo, cpf, is_construtora, ip_address, device_id, device_name, user_agent, created_at'
+            'id, bloco, apartamento, fase, modulo, nome_completo, cpf, is_construtora, confirmado_portaria, online_conectado, com_procuracao, observacao_portaria, conectado_em, ip_address, device_id, device_name, user_agent, created_at'
           )
           .order('bloco', { ascending: true })
           .order('apartamento', { ascending: true }),
@@ -925,6 +929,44 @@ export function useAssembleiaAdminRealtime(autenticado: boolean) {
   // ---------------------------------------------------------------------------
   // 6. SUPORTE DE MESA (CREDENCIAMENTO MANUAL, EDIÇÃO E LIBERAÇÃO DE UNIDADE)
   // ---------------------------------------------------------------------------
+  const confirmarPresencaPortaria = useCallback(
+    async (dados: {
+      bloco: number;
+      apartamento: number;
+      com_procuracao?: boolean;
+      observacao?: string;
+    }): Promise<ResultadoOperacaoAdmin> => {
+      const supabase = getSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc('assembleia_confirmar_portaria', {
+        p_bloco: dados.bloco,
+        p_apartamento: dados.apartamento,
+        p_com_procuracao: Boolean(dados.com_procuracao),
+        p_observacao: dados.observacao?.trim() || null,
+      });
+
+      if (error) {
+        return { ok: false, mensagem: error.message };
+      }
+
+      const res = (data ?? {}) as { ok?: boolean; message?: string };
+      if (!res.ok) {
+        return {
+          ok: false,
+          mensagem: res.message || 'Não foi possível confirmar a entrada na portaria.',
+        };
+      }
+
+      await recarregarTudo();
+      return {
+        ok: true,
+        mensagem:
+          res.message ||
+          `Bloco ${String(dados.bloco).padStart(2, '0')} • Apto ${dados.apartamento} confirmado na Portaria e liberado para votar!`,
+      };
+    },
+    [recarregarTudo]
+  );
+
   const credenciarManualMesa = useCallback(
     async (dados: {
       bloco: number;
@@ -1150,6 +1192,7 @@ export function useAssembleiaAdminRealtime(autenticado: boolean) {
     votarEmLoteConstrutora,
     adicionarUnidadesInadimplentes,
     removerUnidadesInadimplentes,
+    confirmarPresencaPortaria,
     credenciarManualMesa,
     atualizarPresencaMesa,
     removerPresencaMesa,

@@ -24,6 +24,8 @@ export interface AssembleiaConfig {
   id: number;
   /** Quando false, bloqueia o check-in por CPF e informa que não há votação ativa */
   assembleia_ativa: boolean;
+  /** Quando true, exige que a entrada seja liberada na Portaria antes do morador validar no celular */
+  exigir_confirmacao_portaria?: boolean;
   convocacao_ativa: ConvocacaoStatus;
   horario_primeira_convocacao: string;
   horario_segunda_convocacao: string;
@@ -70,6 +72,10 @@ export interface PresencaPublica {
   fase: FaseCondominio;
   modulo: ModuloCondominio;
   is_construtora: boolean;
+  /** Confirmado pela equipe da Portaria / Entrada */
+  confirmado_portaria?: boolean;
+  /** Validou o CPF online no celular e está conectado */
+  online_conectado?: boolean;
   created_at: string;
 }
 
@@ -79,6 +85,9 @@ export interface PresencaPublica {
 export interface PresencaAdmin extends PresencaPublica {
   nome_completo: string;
   cpf: string;
+  com_procuracao?: boolean;
+  observacao_portaria?: string | null;
+  conectado_em?: string | null;
   ip_address?: string | null;
   device_id?: string | null;
   device_name?: string | null;

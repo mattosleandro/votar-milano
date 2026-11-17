@@ -54,6 +54,8 @@ interface UnidadeLocalizadaCpf {
   is_inadimplente: boolean;
   is_construtora: boolean;
   pertence_escopo: boolean;
+  confirmado_portaria?: boolean;
+  online_conectado?: boolean;
   ja_credenciado: boolean;
 }
 
@@ -858,40 +860,75 @@ export default function PaginaMorador() {
                     </span>
                   </div>
 
-                  {unidadeSelecionadaConfirmacao.is_inadimplente ? (
-                    <div className="rounded-xl bg-rose-950/90 border border-rose-500/50 p-3.5 text-xs text-rose-200 font-semibold">
-                      Esta unidade está bloqueada para realizar votação por inadimplência. Efetue o
-                      pagamento dos valores pendentes do condomínio e apresente ao Síndico para
-                      liberar a votação.
-                    </div>
-                  ) : !unidadeSelecionadaConfirmacao.pertence_escopo ? (
-                    <div className="rounded-xl bg-amber-950/90 border border-amber-500/50 p-3.5 text-xs text-amber-200 font-semibold">
-                      Esta unidade não pertence ao Quórum selecionado no momento (
-                      {obterMetadadosEscopo(config.escopo_assembleia).rotuloCurto}).
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={confirmandoCheckin}
-                      onClick={() => void handleConfirmarCheckin()}
-                      className="w-full min-h-[54px] rounded-xl bg-emerald-600 text-white font-black text-base tracking-wide shadow-md hover:bg-emerald-500 active:scale-[0.99] transition flex items-center justify-center gap-2"
-                    >
-                      {confirmandoCheckin ? (
-                        <>
-                          <RefreshCw className="w-5 h-5 animate-spin" />
-                          Confirmando Check-in...
-                        </>
-                      ) : (
-                        <>
-                          <UserCheck className="w-5 h-5" />
-                          Confirmar Bloco{' '}
-                          {formatarBloco(unidadeSelecionadaConfirmacao.bloco)} • Apto{' '}
-                          {unidadeSelecionadaConfirmacao.apartamento} (Fase{' '}
-                          {unidadeSelecionadaConfirmacao.fase})
-                        </>
-                      )}
-                    </button>
-                  )}
+                  {(() => {
+                    const confirmadoPortariaTempoReal =
+                      !config.exigir_confirmacao_portaria ||
+                      Boolean(unidadeSelecionadaConfirmacao.confirmado_portaria) ||
+                      presencas.some(
+                        (p) =>
+                          p.bloco === unidadeSelecionadaConfirmacao.bloco &&
+                          p.apartamento === unidadeSelecionadaConfirmacao.apartamento &&
+                          p.confirmado_portaria !== false
+                      );
+
+                    if (unidadeSelecionadaConfirmacao.is_inadimplente) {
+                      return (
+                        <div className="rounded-xl bg-rose-950/90 border border-rose-500/50 p-3.5 text-xs text-rose-200 font-semibold">
+                          Esta unidade está bloqueada para realizar votação por inadimplência.
+                          Efetue o pagamento dos valores pendentes do condomínio e apresente ao
+                          Síndico para liberar a votação.
+                        </div>
+                      );
+                    }
+
+                    if (!unidadeSelecionadaConfirmacao.pertence_escopo) {
+                      return (
+                        <div className="rounded-xl bg-amber-950/90 border border-amber-500/50 p-3.5 text-xs text-amber-200 font-semibold">
+                          Esta unidade não pertence ao Quórum selecionado no momento (
+                          {obterMetadadosEscopo(config.escopo_assembleia).rotuloCurto}).
+                        </div>
+                      );
+                    }
+
+                    if (!confirmadoPortariaTempoReal) {
+                      return (
+                        <div className="rounded-xl bg-violet-950/90 border border-violet-400/50 p-3.5 text-xs text-violet-100 font-semibold space-y-1">
+                          <p className="font-extrabold text-violet-200 uppercase">
+                            Aguardando Liberação na Portaria / Entrada
+                          </p>
+                          <p>
+                            Apresente seu documento ou procuração aos atendentes na entrada da
+                            assembleia. Assim que confirmarem no portão, este botão será liberado
+                            automaticamente!
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button
+                        type="button"
+                        disabled={confirmandoCheckin}
+                        onClick={() => void handleConfirmarCheckin()}
+                        className="w-full min-h-[54px] rounded-xl bg-emerald-600 text-white font-black text-base tracking-wide shadow-md hover:bg-emerald-500 active:scale-[0.99] transition flex items-center justify-center gap-2"
+                      >
+                        {confirmandoCheckin ? (
+                          <>
+                            <RefreshCw className="w-5 h-5 animate-spin" />
+                            Conectando Unidade...
+                          </>
+                        ) : (
+                          <>
+                            <UserCheck className="w-5 h-5" />
+                            Validar e Conectar Bloco{' '}
+                            {formatarBloco(unidadeSelecionadaConfirmacao.bloco)} • Apto{' '}
+                            {unidadeSelecionadaConfirmacao.apartamento} (Fase{' '}
+                            {unidadeSelecionadaConfirmacao.fase})
+                          </>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
           </section>

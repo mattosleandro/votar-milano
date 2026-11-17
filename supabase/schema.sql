@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS public.assembleia_config (
 
 ALTER TABLE public.assembleia_config
   ADD COLUMN IF NOT EXISTS assembleia_ativa boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS exigir_confirmacao_portaria boolean NOT NULL DEFAULT true,
   ADD COLUMN IF NOT EXISTS timer_duration_seconds integer NOT NULL DEFAULT 120,
   ADD COLUMN IF NOT EXISTS timer_started_at timestamptz,
   ADD COLUMN IF NOT EXISTS timer_running boolean NOT NULL DEFAULT false;
@@ -187,6 +188,11 @@ CREATE TABLE IF NOT EXISTS public.assembleia_presencas (
 );
 
 ALTER TABLE public.assembleia_presencas
+  ADD COLUMN IF NOT EXISTS confirmado_portaria boolean NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS online_conectado boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS com_procuracao boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS observacao_portaria text,
+  ADD COLUMN IF NOT EXISTS conectado_em timestamptz,
   ADD COLUMN IF NOT EXISTS ip_address text,
   ADD COLUMN IF NOT EXISTS device_id text,
   ADD COLUMN IF NOT EXISTS device_name text,
@@ -839,15 +845,17 @@ BEGIN
   -- Sincroniza unidades da construtora automaticamente com assembleia_presencas
   IF NEW.is_construtora THEN
     INSERT INTO public.assembleia_presencas (
-      bloco, apartamento, fase, modulo, nome_completo, cpf, is_construtora
+      bloco, apartamento, fase, modulo, nome_completo, cpf, is_construtora, confirmado_portaria, online_conectado
     )
     VALUES (
-      NEW.bloco, NEW.apartamento, NEW.fase, NEW.modulo, NEW.nome_completo, 'CONSTRUTORA', true
+      NEW.bloco, NEW.apartamento, NEW.fase, NEW.modulo, NEW.nome_completo, 'CONSTRUTORA', true, true, true
     )
     ON CONFLICT (bloco, apartamento) DO UPDATE
       SET nome_completo = EXCLUDED.nome_completo,
           cpf = 'CONSTRUTORA',
-          is_construtora = true;
+          is_construtora = true,
+          confirmado_portaria = true,
+          online_conectado = true;
   ELSE
     DELETE FROM public.assembleia_presencas
     WHERE bloco = NEW.bloco AND apartamento = NEW.apartamento AND is_construtora = true;
@@ -900,7 +908,7 @@ CREATE TRIGGER trg_sync_inadimplente_to_unidade
   FOR EACH ROW
   EXECUTE FUNCTION public.trg_fn_sync_inadimplente_to_unidade();
 
--- 4.5 Consulta de CPF para Check-in em 2 Passos (Respeita Quórum Ativo e Bloqueio de Inadimplente)
+-- 4.5 Consulta de CPF para Check-in em 2 Passos (Respeita Quórum Ativo, Portaria e Bloqueio de Inadimplente)
 CREATE OR REPLACE FUNCTION public.assembleia_consultar_cpf(p_cpf text)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -912,6 +920,7 @@ DECLARE
   v_total integer := 0;
   v_inadimplentes integer := 0;
   v_no_escopo integer := 0;
+  v_confirmados_portaria integer := 0;
 BEGIN
   SELECT * INTO v_cfg FROM public.assembleia_config WHERE id = 1;
 
@@ -934,6 +943,14 @@ BEGIN
     COUNT(*) FILTER (
       WHERE public.assembleia_pertence_escopo(u.fase, u.modulo, v_cfg.escopo_assembleia)
     )::integer,
+    COUNT(*) FILTER (
+      WHERE EXISTS (
+        SELECT 1 FROM public.assembleia_presencas pr
+        WHERE pr.bloco = u.bloco
+          AND pr.apartamento = u.apartamento
+          AND pr.confirmado_portaria = true
+      )
+    )::integer,
     COALESCE(
       jsonb_agg(
         jsonb_build_object(
@@ -951,6 +968,18 @@ BEGIN
           ),
           'is_construtora', u.is_construtora,
           'pertence_escopo', public.assembleia_pertence_escopo(u.fase, u.modulo, v_cfg.escopo_assembleia),
+          'confirmado_portaria', EXISTS (
+            SELECT 1 FROM public.assembleia_presencas pr
+            WHERE pr.bloco = u.bloco
+              AND pr.apartamento = u.apartamento
+              AND pr.confirmado_portaria = true
+          ),
+          'online_conectado', EXISTS (
+            SELECT 1 FROM public.assembleia_presencas pr
+            WHERE pr.bloco = u.bloco
+              AND pr.apartamento = u.apartamento
+              AND pr.online_conectado = true
+          ),
           'ja_credenciado', EXISTS (
             SELECT 1 FROM public.assembleia_presencas pr
             WHERE pr.bloco = u.bloco AND pr.apartamento = u.apartamento
@@ -960,7 +989,7 @@ BEGIN
       ),
       '[]'::jsonb
     )
-  INTO v_total, v_inadimplentes, v_no_escopo, v_unidades
+  INTO v_total, v_inadimplentes, v_no_escopo, v_confirmados_portaria, v_unidades
   FROM public.assembleia_unidades u
   WHERE regexp_replace(u.cpf, '\D', '', 'g') = v_cpf_limpo
     AND NOT u.is_construtora;
@@ -969,7 +998,7 @@ BEGIN
     RETURN jsonb_build_object(
       'ok', false,
       'code', 'CPF_NAO_CADASTRADO',
-      'message', 'CPF não encontrado na base de unidades cadastradas. Por favor, dirija-se à Mesa Diretora para conferência e liberação do seu cadastro.'
+      'message', 'CPF não encontrado na base de unidades cadastradas. Por favor, dirija-se à Recepção / Mesa Diretora para conferência e liberação do seu cadastro.'
     );
   END IF;
 
@@ -991,16 +1020,26 @@ BEGIN
     );
   END IF;
 
+  IF COALESCE(v_cfg.exigir_confirmacao_portaria, true) AND v_confirmados_portaria = 0 THEN
+    RETURN jsonb_build_object(
+      'ok', false,
+      'code', 'AGUARDANDO_LIBERACAO_PORTARIA',
+      'message', 'Sua unidade foi localizada, mas ainda aguarda a confirmação de presença na entrada (Portaria). Apresente seu documento ou procuração à equipe de recepção para liberar a votação.',
+      'unidades', v_unidades
+    );
+  END IF;
+
   RETURN jsonb_build_object(
     'ok', true,
     'code', 'UNIDADES_LOCALIZADAS',
     'escopo_assembleia', v_cfg.escopo_assembleia,
+    'exigir_confirmacao_portaria', COALESCE(v_cfg.exigir_confirmacao_portaria, true),
     'unidades', v_unidades
   );
 END;
 $$;
 
--- 4.6 Confirmação de Check-in por CPF com Telemetria de Dispositivo (IP, Device ID, Modelo)
+-- 4.6 Confirmação de Check-in Online pelo Morador com Telemetria de Dispositivo (IP, Device ID, Modelo)
 CREATE OR REPLACE FUNCTION public.assembleia_confirmar_checkin_cpf(
   p_cpf text,
   p_bloco smallint,
@@ -1063,6 +1102,23 @@ BEGIN
     );
   END IF;
 
+  IF COALESCE(v_cfg.exigir_confirmacao_portaria, true) THEN
+    SELECT *
+    INTO v_presenca
+    FROM public.assembleia_presencas
+    WHERE bloco = p_bloco
+      AND apartamento = p_apartamento
+      AND confirmado_portaria = true;
+
+    IF NOT FOUND THEN
+      RETURN jsonb_build_object(
+        'ok', false,
+        'code', 'AGUARDANDO_LIBERACAO_PORTARIA',
+        'message', 'Apresente seu documento ou procuração na entrada da assembleia (Portaria) para liberar seu acesso à sala de votação.'
+      );
+    END IF;
+  END IF;
+
   INSERT INTO public.assembleia_presencas (
     bloco,
     apartamento,
@@ -1071,6 +1127,9 @@ BEGIN
     nome_completo,
     cpf,
     is_construtora,
+    confirmado_portaria,
+    online_conectado,
+    conectado_em,
     ip_address,
     device_id,
     device_name,
@@ -1084,13 +1143,19 @@ BEGIN
     v_unidade.nome_completo,
     v_cpf_limpo,
     false,
+    true,
+    true,
+    now(),
     p_ip_address,
     p_device_id,
     p_device_name,
     p_user_agent
   )
   ON CONFLICT (bloco, apartamento) DO UPDATE
-    SET ip_address = COALESCE(EXCLUDED.ip_address, public.assembleia_presencas.ip_address),
+    SET confirmado_portaria = true,
+        online_conectado = true,
+        conectado_em = COALESCE(public.assembleia_presencas.conectado_em, now()),
+        ip_address = COALESCE(EXCLUDED.ip_address, public.assembleia_presencas.ip_address),
         device_id = COALESCE(EXCLUDED.device_id, public.assembleia_presencas.device_id),
         device_name = COALESCE(EXCLUDED.device_name, public.assembleia_presencas.device_name),
         user_agent = COALESCE(EXCLUDED.user_agent, public.assembleia_presencas.user_agent)
@@ -1099,7 +1164,7 @@ BEGIN
   RETURN jsonb_build_object(
     'ok', true,
     'code', 'CHECKIN_REALIZADO',
-    'message', 'Check-in confirmado com sucesso!',
+    'message', 'Acesso validado e conectado com sucesso!',
     'presenca', jsonb_build_object(
       'id', v_presenca.id,
       'bloco', v_presenca.bloco,
@@ -1108,6 +1173,128 @@ BEGIN
       'modulo', v_presenca.modulo,
       'nome_completo', v_presenca.nome_completo,
       'is_construtora', v_presenca.is_construtora,
+      'confirmado_portaria', v_presenca.confirmado_portaria,
+      'online_conectado', v_presenca.online_conectado,
+      'created_at', v_presenca.created_at
+    )
+  );
+END;
+$$;
+
+-- 4.6-B Confirmação de Presença na Portaria / Recepção (Libera a unidade no telão como CONFIRMADO e habilita votação)
+CREATE OR REPLACE FUNCTION public.assembleia_confirmar_portaria(
+  p_bloco smallint,
+  p_apartamento smallint,
+  p_com_procuracao boolean DEFAULT false,
+  p_observacao text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_cfg public.assembleia_config%ROWTYPE;
+  v_unidade public.assembleia_unidades%ROWTYPE;
+  v_presenca public.assembleia_presencas%ROWTYPE;
+BEGIN
+  SELECT * INTO v_cfg FROM public.assembleia_config WHERE id = 1;
+
+  SELECT *
+  INTO v_unidade
+  FROM public.assembleia_unidades
+  WHERE bloco = p_bloco
+    AND apartamento = p_apartamento;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object(
+      'ok', false,
+      'code', 'UNIDADE_NAO_CADASTRADA',
+      'message', 'Unidade não localizada no cadastro base. Cadastre o proprietário na aba Cadastro Geral antes de liberar.'
+    );
+  END IF;
+
+  IF v_unidade.is_inadimplente OR EXISTS (
+    SELECT 1 FROM public.assembleia_inadimplentes i
+    WHERE i.bloco = p_bloco AND i.apartamento = p_apartamento
+  ) THEN
+    RETURN jsonb_build_object(
+      'ok', false,
+      'code', 'UNIDADE_INADIMPLENTE',
+      'message', 'Unidade consta como INADIMPLENTE e está bloqueada para voto. Encaminhe o morador ao Síndico / Mesa Diretora.'
+    );
+  END IF;
+
+  IF FOUND AND NOT public.assembleia_pertence_escopo(v_unidade.fase, v_unidade.modulo, COALESCE(v_cfg.escopo_assembleia, 'TODOS')) THEN
+    RETURN jsonb_build_object(
+      'ok', false,
+      'code', 'FORA_DO_ESCOPO_QUORUM',
+      'message', format(
+        'O Bloco %s • Apto %s (Fase %s • Módulo %s) não pertence ao escopo desta assembleia (%s).',
+        lpad(p_bloco::text, 2, '0'),
+        p_apartamento,
+        v_unidade.fase,
+        v_unidade.modulo,
+        COALESCE(v_cfg.escopo_assembleia, 'TODOS')
+      )
+    );
+  END IF;
+
+  INSERT INTO public.assembleia_presencas (
+    bloco,
+    apartamento,
+    fase,
+    modulo,
+    nome_completo,
+    cpf,
+    is_construtora,
+    confirmado_portaria,
+    online_conectado,
+    com_procuracao,
+    observacao_portaria
+  )
+  VALUES (
+    v_unidade.bloco,
+    v_unidade.apartamento,
+    v_unidade.fase,
+    v_unidade.modulo,
+    v_unidade.nome_completo,
+    v_unidade.cpf,
+    v_unidade.is_construtora,
+    true,
+    false,
+    COALESCE(p_com_procuracao, false),
+    NULLIF(TRIM(COALESCE(p_observacao, '')), '')
+  )
+  ON CONFLICT (bloco, apartamento) DO UPDATE
+    SET confirmado_portaria = true,
+        com_procuracao = COALESCE(p_com_procuracao, public.assembleia_presencas.com_procuracao),
+        observacao_portaria = COALESCE(
+          NULLIF(TRIM(COALESCE(p_observacao, '')), ''),
+          public.assembleia_presencas.observacao_portaria
+        )
+  RETURNING * INTO v_presenca;
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'code', 'PORTARIA_CONFIRMADA',
+    'message', format(
+      'Entrada confirmada! Bloco %s • Apto %s (Fase %s) já está visível no telão e liberado para validar no celular.',
+      lpad(v_presenca.bloco::text, 2, '0'),
+      v_presenca.apartamento,
+      v_presenca.fase
+    ),
+    'presenca', jsonb_build_object(
+      'id', v_presenca.id,
+      'bloco', v_presenca.bloco,
+      'apartamento', v_presenca.apartamento,
+      'fase', v_presenca.fase,
+      'modulo', v_presenca.modulo,
+      'nome_completo', v_presenca.nome_completo,
+      'cpf', v_presenca.cpf,
+      'is_construtora', v_presenca.is_construtora,
+      'confirmado_portaria', v_presenca.confirmado_portaria,
+      'online_conectado', v_presenca.online_conectado,
+      'com_procuracao', v_presenca.com_procuracao,
+      'observacao_portaria', v_presenca.observacao_portaria,
       'created_at', v_presenca.created_at
     )
   );
@@ -1195,6 +1382,7 @@ GRANT EXECUTE ON FUNCTION
   public.assembleia_checkin_morador(smallint, smallint, text, text),
   public.assembleia_consultar_cpf(text),
   public.assembleia_confirmar_checkin_cpf(text, smallint, smallint, text, text, text, text),
+  public.assembleia_confirmar_portaria(smallint, smallint, boolean, text),
   public.assembleia_abrir_pauta(uuid),
   public.assembleia_resetar_pauta(uuid, boolean),
   public.assembleia_resetar_geral(boolean)
