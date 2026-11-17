@@ -790,6 +790,12 @@ BEGIN
     END IF;
   ELSE
     NEW.cpf := regexp_replace(TRIM(COALESCE(NEW.cpf, '')), '\D', '', 'g');
+    IF NEW.cpf = '' THEN
+      NEW.cpf := 'SEM_CADASTRO';
+    END IF;
+    IF NEW.nome_completo = '' THEN
+      NEW.nome_completo := 'UNIDADE VAGA / SEM CADASTRO';
+    END IF;
   END IF;
   NEW.updated_at := now();
   RETURN NEW;
@@ -1301,7 +1307,152 @@ BEGIN
 END;
 $$;
 
--- 4.7 Histórico de Assembleias Salvas e Reset Geral para Nova Assembleia
+-- 4.7 Sincronização Segura e Automática com a Base Oficial do Condomínio (public.unidades_milano -> public.assembleia_unidades)
+CREATE OR REPLACE FUNCTION public.assembleia_sincronizar_unidades_milano()
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_total integer := 0;
+  v_com_cpf integer := 0;
+  v_vagas integer := 0;
+BEGIN
+  IF to_regclass('public.unidades_milano') IS NULL THEN
+    RETURN jsonb_build_object(
+      'ok', false,
+      'message', 'Tabela public.unidades_milano não encontrada neste banco.'
+    );
+  END IF;
+
+  INSERT INTO public.assembleia_unidades (
+    bloco,
+    apartamento,
+    fase,
+    modulo,
+    nome_completo,
+    cpf,
+    is_inadimplente,
+    is_construtora,
+    observacao
+  )
+  SELECT
+    um.bloco,
+    um.apartamento,
+    public.assembleia_calcular_fase(um.bloco),
+    public.assembleia_calcular_modulo(um.bloco),
+    CASE
+      WHEN COALESCE(TRIM(um.nome_cliente), '') <> '' THEN TRIM(um.nome_cliente)
+      ELSE 'UNIDADE VAGA / SEM CADASTRO NA CONSTRUTORA'
+    END,
+    CASE
+      WHEN regexp_replace(COALESCE(um.cpf, ''), '\D', '', 'g') <> ''
+        THEN regexp_replace(um.cpf, '\D', '', 'g')
+      ELSE 'SEM_CADASTRO'
+    END,
+    false,
+    false,
+    CASE
+      WHEN COALESCE(TRIM(um.cpf), '') = '' THEN COALESCE(um.observacoes, 'UNIDADE VAGA / SEM CADASTRO NA CONSTRUTORA')
+      ELSE NULL
+    END
+  FROM public.unidades_milano um
+  ON CONFLICT (bloco, apartamento) DO UPDATE
+    SET nome_completo = CASE
+          WHEN COALESCE(TRIM(EXCLUDED.nome_completo), '') <> ''
+               AND EXCLUDED.cpf <> 'SEM_CADASTRO'
+            THEN EXCLUDED.nome_completo
+          ELSE public.assembleia_unidades.nome_completo
+        END,
+        cpf = CASE
+          WHEN EXCLUDED.cpf <> 'SEM_CADASTRO'
+            THEN EXCLUDED.cpf
+          ELSE public.assembleia_unidades.cpf
+        END,
+        updated_at = now();
+
+  SELECT
+    COUNT(*)::integer,
+    COUNT(*) FILTER (WHERE cpf ~ '^\d{11}$')::integer,
+    COUNT(*) FILTER (WHERE cpf !~ '^\d{11}$')::integer
+  INTO v_total, v_com_cpf, v_vagas
+  FROM public.assembleia_unidades;
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'total_unidades', v_total,
+    'com_cpf', v_com_cpf,
+    'vagas', v_vagas,
+    'message', format(
+      '%s unidades sincronizadas com a base oficial do condomínio (%s proprietários com CPF e %s unidades vagas)!',
+      v_total,
+      v_com_cpf,
+      v_vagas
+    )
+  );
+END;
+$$;
+
+-- Trigger que mantém assembleia_unidades atualizado sempre que unidades_milano receber novo morador/CPF no portal principal
+CREATE OR REPLACE FUNCTION public.trg_fn_sync_from_unidades_milano()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  INSERT INTO public.assembleia_unidades (
+    bloco,
+    apartamento,
+    fase,
+    modulo,
+    nome_completo,
+    cpf,
+    is_inadimplente,
+    is_construtora,
+    observacao
+  )
+  VALUES (
+    NEW.bloco,
+    NEW.apartamento,
+    public.assembleia_calcular_fase(NEW.bloco),
+    public.assembleia_calcular_modulo(NEW.bloco),
+    CASE
+      WHEN COALESCE(TRIM(NEW.nome_cliente), '') <> '' THEN TRIM(NEW.nome_cliente)
+      ELSE 'UNIDADE VAGA / SEM CADASTRO NA CONSTRUTORA'
+    END,
+    CASE
+      WHEN regexp_replace(COALESCE(NEW.cpf, ''), '\D', '', 'g') <> ''
+        THEN regexp_replace(NEW.cpf, '\D', '', 'g')
+      ELSE 'SEM_CADASTRO'
+    END,
+    false,
+    false,
+    CASE
+      WHEN COALESCE(TRIM(NEW.cpf), '') = '' THEN COALESCE(NEW.observacoes, 'UNIDADE VAGA / SEM CADASTRO NA CONSTRUTORA')
+      ELSE NULL
+    END
+  )
+  ON CONFLICT (bloco, apartamento) DO UPDATE
+    SET nome_completo = EXCLUDED.nome_completo,
+        cpf = EXCLUDED.cpf,
+        updated_at = now();
+
+  RETURN NEW;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF to_regclass('public.unidades_milano') IS NOT NULL THEN
+    DROP TRIGGER IF EXISTS trg_sync_from_unidades_milano ON public.unidades_milano;
+    CREATE TRIGGER trg_sync_from_unidades_milano
+      AFTER INSERT OR UPDATE OF nome_cliente, cpf, bloco, apartamento
+      ON public.unidades_milano
+      FOR EACH ROW
+      EXECUTE FUNCTION public.trg_fn_sync_from_unidades_milano();
+  END IF;
+END;
+$$;
+
+-- 4.8 Histórico de Assembleias Salvas e Reset Geral para Nova Assembleia
 CREATE TABLE IF NOT EXISTS public.assembleia_historico (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   titulo text NOT NULL,
@@ -1336,6 +1487,9 @@ BEGIN
     DELETE FROM public.assembleia_unidades;
   END IF;
 
+  -- Garante que todas as 544 unidades de public.unidades_milano estejam sempre sincronizadas
+  PERFORM public.assembleia_sincronizar_unidades_milano();
+
   UPDATE public.assembleia_config
   SET assembleia_ativa = false,
       convocacao_ativa = 'AGUARDANDO',
@@ -1351,7 +1505,7 @@ BEGIN
 
   RETURN jsonb_build_object(
     'ok', true,
-    'message', 'Assembleia resetada com sucesso! Sistema pronto para iniciar uma nova assembleia.'
+    'message', 'Assembleia resetada e base de 544 moradores sincronizada com sucesso!'
   );
 END;
 $$;
@@ -1383,6 +1537,7 @@ GRANT EXECUTE ON FUNCTION
   public.assembleia_consultar_cpf(text),
   public.assembleia_confirmar_checkin_cpf(text, smallint, smallint, text, text, text, text),
   public.assembleia_confirmar_portaria(smallint, smallint, boolean, text),
+  public.assembleia_sincronizar_unidades_milano(),
   public.assembleia_abrir_pauta(uuid),
   public.assembleia_resetar_pauta(uuid, boolean),
   public.assembleia_resetar_geral(boolean)
@@ -1501,7 +1656,8 @@ BEGIN
 END;
 $$;
 
--- Garante contadores sincronizados e recarrega schema cache do PostgREST
+-- Garante sincronização inicial com public.unidades_milano, contadores sincronizados e recarrega schema cache do PostgREST
+SELECT public.assembleia_sincronizar_unidades_milano();
 SELECT public.assembleia_recalcular_totais_inadimplentes();
 NOTIFY pgrst, 'reload schema';
 
