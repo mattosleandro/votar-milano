@@ -77,6 +77,7 @@ function sanitizarPresencaPublica(raw: Record<string, unknown>): PresencaPublica
       typeof raw.online_conectado === 'boolean'
         ? raw.online_conectado
         : Boolean(raw.is_construtora),
+    com_procuracao: Boolean(raw.com_procuracao),
     created_at: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
   };
 }
@@ -156,7 +157,7 @@ export function useAssembleiaPublicRealtime(channelPrefix = 'public') {
         supabase
           .from('assembleia_presencas')
           .select(
-            'id, bloco, apartamento, fase, modulo, is_construtora, confirmado_portaria, online_conectado, created_at'
+            'id, bloco, apartamento, fase, modulo, is_construtora, confirmado_portaria, online_conectado, com_procuracao, created_at'
           )
           .order('bloco', { ascending: true })
           .order('apartamento', { ascending: true }),

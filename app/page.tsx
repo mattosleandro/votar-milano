@@ -1343,6 +1343,10 @@ export default function PaginaMorador() {
                             <span className="px-1 py-0.2 rounded bg-black/20 text-[9px] font-bold uppercase">
                               CONST.
                             </span>
+                          ) : u.com_procuracao ? (
+                            <span className="px-1 py-0.2 rounded bg-amber-500/30 border border-amber-600/40 text-[9px] font-extrabold uppercase">
+                              PROC.
+                            </span>
                           ) : null}
                           <span className="text-[10px] font-bold uppercase">
                             {voto === 'NAO'

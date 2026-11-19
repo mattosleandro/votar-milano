@@ -140,7 +140,13 @@ export function exportarListaPresencaCsv(presencas: readonly PresencaAdmin[]): v
       `B${blocoFmt} | A${p.apartamento}`,
       `Fase ${p.fase}`,
       `Módulo ${p.modulo}`,
-      p.is_construtora ? 'CONSTRUTORA' : 'MORADOR / PROPRIETÁRIO',
+      p.is_construtora
+        ? 'CONSTRUTORA'
+        : p.com_procuracao
+          ? p.observacao_portaria
+            ? `PROCURAÇÃO (${p.observacao_portaria})`
+            : 'PROCURAÇÃO'
+          : 'TITULAR / PROPRIETÁRIO',
       p.nome_completo,
       formatarCpfAuditoria(p.cpf, p.is_construtora),
       p.ip_address || '',
@@ -363,7 +369,13 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
       `B${bFmt} | A${pr.apartamento}`,
       `Fase ${pr.fase}`,
       `Módulo ${pr.modulo}`,
-      pr.is_construtora ? 'CONSTRUTORA' : 'MORADOR / PROPRIETÁRIO',
+      pr.is_construtora
+        ? 'CONSTRUTORA'
+        : pr.com_procuracao
+          ? pr.observacao_portaria
+            ? `PROCURAÇÃO (${pr.observacao_portaria})`
+            : 'PROCURAÇÃO'
+          : 'TITULAR / PROPRIETÁRIO',
       pr.nome_completo,
       formatarCpfAuditoria(pr.cpf, pr.is_construtora),
       pr.ip_address || '',

@@ -76,6 +76,8 @@ export interface PresencaPublica {
   confirmado_portaria?: boolean;
   /** Validou o CPF online no celular e está conectado */
   online_conectado?: boolean;
+  /** Indica se a presença foi confirmada mediante Procuração (sem expor Nome/CPF) */
+  com_procuracao?: boolean;
   created_at: string;
 }
 

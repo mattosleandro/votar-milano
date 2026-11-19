@@ -1311,6 +1311,8 @@ $$;
 CREATE OR REPLACE FUNCTION public.assembleia_sincronizar_unidades_milano()
 RETURNS jsonb
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_total integer := 0;
@@ -1470,21 +1472,23 @@ CREATE OR REPLACE FUNCTION public.assembleia_resetar_geral(
 )
 RETURNS jsonb
 LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
   PERFORM set_config('assembleia.allow_reset', 'true', true);
   PERFORM set_config('assembleia.bypass_freeze', 'true', true);
 
-  DELETE FROM public.assembleia_votos;
-  DELETE FROM public.assembleia_pautas;
+  DELETE FROM public.assembleia_votos WHERE true;
+  DELETE FROM public.assembleia_pautas WHERE true;
   ALTER SEQUENCE IF EXISTS public.assembleia_pautas_ordem_seq RESTART WITH 1;
 
   IF p_manter_cadastro_base THEN
     DELETE FROM public.assembleia_presencas WHERE NOT is_construtora;
   ELSE
-    DELETE FROM public.assembleia_presencas;
-    DELETE FROM public.assembleia_inadimplentes;
-    DELETE FROM public.assembleia_unidades;
+    DELETE FROM public.assembleia_presencas WHERE true;
+    DELETE FROM public.assembleia_inadimplentes WHERE true;
+    DELETE FROM public.assembleia_unidades WHERE true;
   END IF;
 
   -- Garante que todas as 544 unidades de public.unidades_milano estejam sempre sincronizadas

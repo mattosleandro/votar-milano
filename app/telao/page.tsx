@@ -6,6 +6,7 @@ import {
   Building2,
   CheckCircle2,
   Clock,
+  FileCheck2,
   LayoutGrid,
   Maximize2,
   Minimize2,
@@ -40,6 +41,7 @@ interface CelulaUnidadeTelaoProps {
   presente: boolean;
   onlineConectado: boolean;
   isConstrutora: boolean;
+  comProcuracao: boolean;
   voto?: OpcaoVoto;
   mostrarBlocoPrefix?: boolean;
   expandido?: boolean;
@@ -51,6 +53,7 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
   presente,
   onlineConectado,
   isConstrutora,
+  comProcuracao,
   voto,
   mostrarBlocoPrefix = false,
   expandido = false,
@@ -77,30 +80,59 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
       'bg-violet-600 border-violet-300 text-white shadow-sm shadow-violet-950/70';
   }
 
-  const destaqueConstrutora = isConstrutora ? 'ring-1 ring-milano-gold' : '';
+  const destaqueEspecial = isConstrutora
+    ? 'ring-1 ring-milano-gold'
+    : comProcuracao
+      ? 'ring-1 ring-amber-300'
+      : '';
+
+  const tituloTooltip = isConstrutora
+    ? `${formatarUnidadeTelaoCompacta(bloco, apartamento)} (Construtora)`
+    : comProcuracao
+      ? `${formatarUnidadeTelaoCompacta(bloco, apartamento)} (Com Procuração)`
+      : formatarUnidadeTelaoCompacta(bloco, apartamento);
 
   return (
     <div
-      title={
-        isConstrutora
-          ? `${formatarUnidadeTelaoCompacta(bloco, apartamento)} (Construtora)`
-          : formatarUnidadeTelaoCompacta(bloco, apartamento)
-      }
-      className={`rounded border transition-colors duration-150 flex items-center justify-center text-center select-none overflow-hidden ${classesCor} ${destaqueConstrutora} ${
-        expandido ? 'px-2 py-2 min-h-[42px]' : 'px-1 py-0.5 min-h-[20px]'
+      title={tituloTooltip}
+      className={`relative rounded border transition-colors duration-150 flex items-center justify-center gap-0.5 text-center select-none overflow-hidden ${classesCor} ${destaqueEspecial} ${
+        expandido
+          ? 'px-2 py-2 min-h-[42px]'
+          : 'px-0.5 py-0.5 min-h-[20px] sm:min-h-[22px] xl:min-h-[19px] 2xl:min-h-[22px]'
       }`}
     >
       <span
         className={`font-mono font-extrabold tracking-tight tabular-nums leading-none whitespace-nowrap ${
           expandido
             ? 'text-xs xl:text-sm 2xl:text-base'
-            : 'text-[10px] xl:text-[11px] 2xl:text-xs'
+            : 'text-[10px] sm:text-[11px] xl:text-[10px] 2xl:text-xs'
         }`}
       >
         {mostrarBlocoPrefix
           ? formatarUnidadeTelaoCompacta(bloco, apartamento)
           : String(apartamento)}
       </span>
+
+      {/* Marca visual identificando unidade representada por Procuração */}
+      {comProcuracao && (
+        <span
+          title="Unidade representada por Procuração"
+          className={`inline-flex items-center justify-center rounded bg-amber-300 text-[#0C0C0D] font-black leading-none shrink-0 shadow-xs ${
+            expandido
+              ? 'px-1.5 py-0.5 text-[10px] ml-1'
+              : 'px-1 py-[1px] text-[8px] 2xl:text-[9px]'
+          }`}
+        >
+          {expandido ? 'PROC' : 'P'}
+        </span>
+      )}
+
+      {/* Marca visual identificando Construtora no modo expandido */}
+      {isConstrutora && expandido && (
+        <span className="inline-flex items-center justify-center rounded bg-milano-gold text-[#0C0C0D] font-black leading-none px-1.5 py-0.5 text-[10px] ml-1 shrink-0">
+          CONST
+        </span>
+      )}
     </div>
   );
 });
@@ -175,13 +207,14 @@ export default function PaginaTelao() {
   const escopoAtivo = pautaExibida ? pautaExibida.escopo : config.escopo_assembleia;
   const metaEscopo = useMemo(() => obterMetadadosEscopo(escopoAtivo), [escopoAtivo]);
 
-  // Contadores de presença por Fase, Confirmados Portaria e Conectados Online
+  // Contadores de presença por Fase, Confirmados Portaria, Conectados Online e Procurações
   const contadoresPresenca = useMemo(() => {
     let fase1 = 0;
     let fase2 = 0;
     let construtora = 0;
     let confirmadosPortaria = 0;
     let conectadosOnline = 0;
+    let comProcuracao = 0;
     for (const p of presencas) {
       if (p.fase === 1) fase1 += 1;
       else if (p.fase === 2) fase2 += 1;
@@ -190,6 +223,7 @@ export default function PaginaTelao() {
       } else {
         if (p.confirmado_portaria !== false) confirmadosPortaria += 1;
         if (p.online_conectado) conectadosOnline += 1;
+        if (p.com_procuracao) comProcuracao += 1;
       }
     }
     return {
@@ -199,6 +233,7 @@ export default function PaginaTelao() {
       construtora,
       confirmadosPortaria,
       conectadosOnline,
+      comProcuracao,
     };
   }, [presencas]);
 
@@ -247,56 +282,60 @@ export default function PaginaTelao() {
     }
   }, []);
 
-  // Colunas responsivas para os Cards de Bloco conforme a quantidade de blocos no escopo
-  const numColunasBlocos = useMemo(() => {
+  // Classes de Grid 100% Responsivas para Datashow (4:3, 16:10, 16:9), Tablets e Monitores
+  const classesGridResponsivoBlocos = useMemo(() => {
     const qtd = metaEscopo.blocos.length;
-    if (qtd > 20) return 7; // 34 blocos -> 7 colunas x 5 linhas
-    if (qtd > 12) return 6; // 16 ou 18 blocos -> 6 colunas x 3 linhas
-    return 4; // 7 a 11 blocos -> 4 colunas x 2-3 linhas
-  }, [metaEscopo.blocos.length]);
-
-  const numLinhasBlocos = useMemo(
-    () => Math.ceil(metaEscopo.blocos.length / numColunasBlocos),
-    [metaEscopo.blocos.length, numColunasBlocos]
-  );
+    if (qtd > 20) {
+      // 34 blocos: adapta suavemente de 1/2/3/4 colunas (celular/tablet) até 6/7 colunas (monitores/datashow)
+      return painelMaximizado
+        ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7'
+        : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7';
+    }
+    if (qtd > 12) {
+      // 16 ou 18 blocos (Fase 1 ou Fase 2)
+      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6';
+    }
+    // 7 a 11 blocos (Módulos 1 a 4)
+    return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+  }, [metaEscopo.blocos.length, painelMaximizado]);
 
   return (
-    <div className="min-h-screen lg:h-screen lg:overflow-hidden bg-slate-950 text-white flex flex-col lg:flex-row">
+    <div className="min-h-screen xl:h-screen xl:overflow-hidden bg-slate-950 text-white flex flex-col xl:flex-row">
       {/* =====================================================================
-          BARRA LATERAL ESQUERDA FIXA (Oculta quando o painel está maximizado)
+          BARRA LATERAL ESQUERDA (Responsiva em Tablets / Fixa em Datashow Widescreen)
+          Oculta quando o painel está maximizado em Tela Inteira
          ===================================================================== */}
       {!painelMaximizado && (
-        <aside className="w-full lg:w-[290px] 2xl:w-[335px] shrink-0 bg-[#0C0C0D] border-b lg:border-b-0 lg:border-r border-milano-gold/25 p-3.5 2xl:p-5 flex flex-col justify-between gap-3">
-          <div className="space-y-3">
-            {/* Topo: Logo Oficial Branca + Dourada e Status WebSocket */}
-            <div className="flex items-center justify-between gap-2">
-              <MilanoLogo variant="dark" className="h-8 2xl:h-10 w-auto" />
-              <div className="flex items-center gap-1.5">
-                <span
-                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold border ${
-                    statusConexao === 'AO_VIVO'
-                      ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500/40'
-                      : 'bg-amber-950/90 text-amber-300 border-amber-500/40'
-                  }`}
-                >
-                  {statusConexao === 'AO_VIVO' ? (
-                    <>
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <Wifi className="w-3 h-3" />
-                      <span>AO VIVO</span>
-                    </>
-                  ) : (
-                    <>
-                      <WifiOff className="w-3 h-3 animate-pulse" />
-                      <span>SYNC</span>
-                    </>
-                  )}
-                </span>
-              </div>
-            </div>
+        <aside className="w-full xl:w-[285px] 2xl:w-[330px] shrink-0 bg-[#0C0C0D] border-b xl:border-b-0 xl:border-r border-milano-gold/25 p-3 2xl:p-4 flex flex-col justify-between gap-3">
+          {/* Topo: Logo Oficial Branca + Dourada e Status WebSocket */}
+          <div className="flex items-center justify-between gap-2">
+            <MilanoLogo variant="dark" className="h-8 2xl:h-9 w-auto" />
+            <span
+              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                statusConexao === 'AO_VIVO'
+                  ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500/40'
+                  : 'bg-amber-950/90 text-amber-300 border-amber-500/40'
+              }`}
+            >
+              {statusConexao === 'AO_VIVO' ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <Wifi className="w-3 h-3" />
+                  <span>AO VIVO</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3 h-3 animate-pulse" />
+                  <span>SYNC</span>
+                </>
+              )}
+            </span>
+          </div>
 
+          {/* Em tablets/telas médias (< xl), organiza os widgets em grade horizontal; em xl+ empilha verticalmente */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-1 gap-2.5 flex-1">
             {/* Cronômetro de Convocação OU Relógio Local */}
-            <div className="rounded-xl bg-slate-900/95 border border-milano-gold/40 px-3.5 py-2.5 shadow-md">
+            <div className="rounded-xl bg-slate-900/95 border border-milano-gold/40 px-3 py-2.5 shadow-md flex flex-col justify-center">
               {estadoRelogio.emContagemRegressiva ? (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-milano-gold-light">
@@ -336,35 +375,33 @@ export default function PaginaTelao() {
             </div>
 
             {/* QR Code de Alta Nitidez para Projeção */}
-            <div className="rounded-2xl bg-slate-900/90 border border-milano-gold/35 p-3 2xl:p-4 text-center space-y-2 shadow-lg">
-              <p className="text-[11px] 2xl:text-xs font-bold uppercase tracking-widest text-milano-gold-light">
+            <div className="rounded-2xl bg-slate-900/90 border border-milano-gold/35 p-2.5 2xl:p-3.5 text-center space-y-1.5 shadow-lg flex flex-col items-center justify-center">
+              <p className="text-[10px] 2xl:text-xs font-bold uppercase tracking-widest text-milano-gold-light">
                 Aponte a Câmera para Validar e Votar
               </p>
-              <div className="bg-white p-2.5 rounded-xl inline-flex items-center justify-center shadow-inner mx-auto">
+              <div className="bg-white p-2 rounded-xl inline-flex items-center justify-center shadow-inner">
                 <QRCodeSVG
                   value={APP_PUBLIC_URL}
-                  size={136}
+                  size={124}
                   level="H"
                   marginSize={1}
                   bgColor="#FFFFFF"
                   fgColor="#0C0C0D"
                   imageSettings={{
                     src: '/brand/logo-mark.png',
-                    height: 28,
-                    width: 28,
+                    height: 26,
+                    width: 26,
                     excavate: true,
                   }}
                 />
               </div>
-              <div>
-                <p className="text-sm 2xl:text-base font-extrabold font-mono text-milano-gold tracking-tight">
-                  {dominioLegivel}
-                </p>
-              </div>
+              <p className="text-xs 2xl:text-sm font-extrabold font-mono text-milano-gold tracking-tight">
+                {dominioLegivel}
+              </p>
             </div>
 
             {/* Status das Convocações & Quórum */}
-            <div className="rounded-xl bg-slate-900/75 border border-slate-800 p-3 space-y-2">
+            <div className="rounded-xl bg-slate-900/75 border border-slate-800 p-3 space-y-2 flex flex-col justify-center">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                   Convocação
@@ -412,56 +449,62 @@ export default function PaginaTelao() {
                 />
               </div>
             </div>
-          </div>
 
-          {/* Contadores ao Vivo de Unidades Presentes + Total Agregado de Inadimplentes */}
-          <div className="space-y-2">
-            <div className="rounded-xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 p-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-milano-gold" />
-                  Presentes Confirmados
-                </span>
-                {contadoresPresenca.construtora > 0 ? (
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-milano-gold/15 text-milano-gold-light border border-milano-gold/30 tabular-nums">
-                    +{contadoresPresenca.construtora} Construtora
+            {/* Contadores ao Vivo de Unidades Presentes + Procurações + Inadimplentes */}
+            <div className="space-y-2 flex flex-col justify-between">
+              <div className="rounded-xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-milano-gold" />
+                    Presentes Confirmados
                   </span>
-                ) : null}
-              </div>
-              <div className="mt-0.5 flex items-baseline gap-2 tabular-nums">
-                <span className="text-2xl 2xl:text-3xl font-extrabold font-mono text-white">
-                  {contadoresPresenca.total}
-                </span>
-                <span className="text-xs font-mono text-slate-400">
-                  / {metaEscopo.totalUnidades} no escopo
-                </span>
+                  {contadoresPresenca.construtora > 0 ? (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-milano-gold/15 text-milano-gold-light border border-milano-gold/30 tabular-nums">
+                      +{contadoresPresenca.construtora} Const.
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-0.5 flex items-baseline gap-2 tabular-nums">
+                  <span className="text-2xl font-extrabold font-mono text-white">
+                    {contadoresPresenca.total}
+                  </span>
+                  <span className="text-xs font-mono text-slate-400">
+                    / {metaEscopo.totalUnidades} no escopo
+                  </span>
+                </div>
+
+                <div className="mt-2 grid grid-cols-3 gap-1 tabular-nums">
+                  <div className="rounded-lg bg-violet-950/50 border border-violet-500/40 px-2 py-1">
+                    <p className="text-[9px] font-semibold text-violet-300">Portaria</p>
+                    <p className="text-xs 2xl:text-sm font-extrabold font-mono text-white">
+                      {contadoresPresenca.confirmadosPortaria}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-sky-950/50 border border-sky-500/40 px-2 py-1">
+                    <p className="text-[9px] font-semibold text-sky-300">Conectados</p>
+                    <p className="text-xs 2xl:text-sm font-extrabold font-mono text-white">
+                      {contadoresPresenca.conectadosOnline}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-amber-950/50 border border-amber-400/40 px-2 py-1">
+                    <p className="text-[9px] font-semibold text-amber-300">Procuração</p>
+                    <p className="text-xs 2xl:text-sm font-extrabold font-mono text-amber-200">
+                      {contadoresPresenca.comProcuracao}
+                    </p>
+                  </div>
+                </div>
               </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-1.5 tabular-nums">
-                <div className="rounded-lg bg-violet-950/50 border border-violet-500/40 px-2.5 py-1.5">
-                  <p className="text-[10px] font-semibold text-violet-300">Na Portaria</p>
-                  <p className="text-sm 2xl:text-base font-extrabold font-mono text-white">
-                    {contadoresPresenca.confirmadosPortaria}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-sky-950/50 border border-sky-500/40 px-2.5 py-1.5">
-                  <p className="text-[10px] font-semibold text-sky-300">Conectados</p>
-                  <p className="text-sm 2xl:text-base font-extrabold font-mono text-white">
-                    {contadoresPresenca.conectadosOnline}
-                  </p>
-                </div>
+              {/* Indicador Público Obrigatório: APENAS Quantidade Total de Inadimplentes */}
+              <div className="rounded-xl bg-amber-950/35 border border-amber-500/30 px-3 py-1.5 flex items-center justify-between gap-2 tabular-nums">
+                <span className="text-[11px] font-semibold text-amber-200/90 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  Inadimplentes (sem voto)
+                </span>
+                <span className="text-sm font-extrabold font-mono text-amber-300">
+                  {config.total_inadimplentes}
+                </span>
               </div>
-            </div>
-
-            {/* Indicador Público Obrigatório: APENAS Quantidade Total de Inadimplentes */}
-            <div className="rounded-xl bg-amber-950/35 border border-amber-500/30 px-3 py-2 flex items-center justify-between gap-2 tabular-nums">
-              <span className="text-[11px] font-semibold text-amber-200/90 flex items-center gap-1.5">
-                <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                Inadimplentes (sem voto)
-              </span>
-              <span className="text-base font-extrabold font-mono text-amber-300">
-                {config.total_inadimplentes}
-              </span>
             </div>
           </div>
         </aside>
@@ -470,32 +513,32 @@ export default function PaginaTelao() {
       {/* =====================================================================
           ÁREA PRINCIPAL: TOPO COM CRONÔMETRO DE VOTAÇÃO + PLACAR + PAINEL AGRUPADO POR BLOCO
          ===================================================================== */}
-      <main className="flex-1 flex flex-col min-w-0 p-2.5 2xl:p-3.5 gap-2.5 lg:overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 p-2 sm:p-2.5 2xl:p-3.5 gap-2 sm:gap-2.5 xl:overflow-hidden">
         {/* Topo Compacto: Pauta Ativa + Cronômetro Regressivo (2 min) + Placar em Linha */}
-        <section className="rounded-2xl bg-[#0C0C0D] border border-slate-800 px-4 py-2.5 2xl:px-5 2xl:py-3 shadow-lg shrink-0">
+        <section className="rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3.5 py-2.5 2xl:px-5 2xl:py-3 shadow-lg shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Esquerda: Badges e Título da Pauta */}
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex flex-wrap items-center gap-2">
                 {pautaAberta ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-extrabold uppercase tracking-wider">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                     VOTAÇÃO ABERTA • PAUTA #{pautaAberta.ordem}
                   </span>
                 ) : pautaExibida ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-800 border border-slate-600 text-slate-200 text-xs font-extrabold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-slate-800 border border-slate-600 text-slate-200 text-xs font-extrabold uppercase tracking-wider">
                     <CheckCircle2 className="w-3.5 h-3.5 text-milano-gold" />
                     ENCERRADA • PAUTA #{pautaExibida.ordem}
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-milano-gold/15 border border-milano-gold/40 text-milano-gold-light text-xs font-extrabold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-milano-gold/15 border border-milano-gold/40 text-milano-gold-light text-xs font-extrabold uppercase tracking-wider">
                     {config.assembleia_ativa
                       ? 'CREDENCIAMENTO LIBERADO'
                       : 'AGUARDANDO ABERTURA PELA MESA'}
                   </span>
                 )}
 
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-milano-gold text-[#0C0C0D] text-xs font-black uppercase tracking-wide shadow">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-milano-gold text-[#0C0C0D] text-xs font-black uppercase tracking-wide shadow">
                   <Building2 className="w-3.5 h-3.5 shrink-0" />
                   {metaEscopo.badgeTelao}
                 </span>
@@ -504,7 +547,7 @@ export default function PaginaTelao() {
                 (pautaExibida?.status === 'encerrada' || estadoTimerVotacao.esgotado) &&
                 placar.totalVotosRegistrados > 0 ? (
                   <span
-                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-black uppercase tracking-wider shadow-md border ${
+                    className={`inline-flex items-center gap-1.5 px-3 py-0.5 rounded-md text-xs font-black uppercase tracking-wider shadow-md border ${
                       placar.vencedor === 'SIM'
                         ? 'bg-emerald-500 text-slate-950 border-emerald-200 animate-pulse'
                         : placar.vencedor === 'NAO'
@@ -521,7 +564,7 @@ export default function PaginaTelao() {
                 ) : null}
               </div>
 
-              <h1 className="text-base sm:text-lg 2xl:text-xl font-extrabold text-white tracking-tight truncate">
+              <h1 className="text-sm sm:text-base 2xl:text-xl font-extrabold text-white tracking-tight truncate">
                 {pautaExibida
                   ? pautaExibida.titulo
                   : 'Confirme presença na recepção e acesse votar.portalmilano.com'}
@@ -530,7 +573,7 @@ export default function PaginaTelao() {
 
             {/* Centro: Contador Regressivo de Deliberação (Padrão 02:00) */}
             <div
-              className={`px-3.5 py-1.5 rounded-xl border flex items-center gap-3 tabular-nums transition-colors ${
+              className={`px-3 py-1.5 rounded-xl border flex items-center gap-2.5 tabular-nums transition-colors ${
                 estadoTimerVotacao.esgotado
                   ? 'bg-rose-950/90 border-rose-500 text-rose-200 animate-pulse'
                   : estadoTimerVotacao.alertaFinal
@@ -564,9 +607,9 @@ export default function PaginaTelao() {
                 const naoVenceu = mostrarVencedor && placar.vencedor === 'NAO';
 
                 return (
-                  <div className="grid grid-cols-3 gap-2 tabular-nums shrink-0">
+                  <div className="grid grid-cols-3 gap-2 tabular-nums w-full sm:w-auto shrink-0">
                     <div
-                      className={`rounded-xl px-3 py-1 min-w-[110px] 2xl:min-w-[132px] transition-all ${
+                      className={`rounded-xl px-3 py-1 min-w-[98px] 2xl:min-w-[130px] transition-all ${
                         simVenceu
                           ? 'bg-emerald-900/90 border-2 border-milano-gold ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-950'
                           : 'bg-emerald-950/70 border border-emerald-500/50'
@@ -584,7 +627,7 @@ export default function PaginaTelao() {
                         <span className="font-mono">{placar.pctSimValidos.toFixed(0)}%</span>
                       </div>
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
+                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
                           {placar.sim}
                         </p>
                         <span className="text-[10px] font-semibold text-emerald-300/80 font-mono">
@@ -594,7 +637,7 @@ export default function PaginaTelao() {
                     </div>
 
                     <div
-                      className={`rounded-xl px-3 py-1 min-w-[110px] 2xl:min-w-[132px] transition-all ${
+                      className={`rounded-xl px-3 py-1 min-w-[98px] 2xl:min-w-[130px] transition-all ${
                         naoVenceu
                           ? 'bg-rose-900/90 border-2 border-milano-gold ring-2 ring-rose-400/50 shadow-lg shadow-rose-950'
                           : 'bg-rose-950/70 border border-rose-500/50'
@@ -612,7 +655,7 @@ export default function PaginaTelao() {
                         <span className="font-mono">{placar.pctNaoValidos.toFixed(0)}%</span>
                       </div>
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
+                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
                           {placar.nao}
                         </p>
                         <span className="text-[10px] font-semibold text-rose-300/80 font-mono">
@@ -621,17 +664,17 @@ export default function PaginaTelao() {
                       </div>
                     </div>
 
-                    <div className="rounded-xl bg-amber-950/60 border border-amber-400/45 px-3 py-1 min-w-[116px] 2xl:min-w-[138px]">
+                    <div className="rounded-xl bg-amber-950/60 border border-amber-400/45 px-3 py-1 min-w-[104px] 2xl:min-w-[136px]">
                       <div className="flex items-center justify-between gap-1 text-[11px] font-black text-amber-300">
-                        <span>NÃO VOTOU (ABST.)</span>
+                        <span>NÃO VOTOU</span>
                         <span className="font-mono">{placar.pctNaoVotaram.toFixed(0)}%</span>
                       </div>
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-xl 2xl:text-2xl font-black font-mono text-amber-100 leading-tight">
+                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-amber-100 leading-tight">
                           {placar.naoVotaram}
                         </p>
                         <span className="text-[10px] font-semibold text-amber-300/80">
-                          Imparciais
+                          Abst.
                         </span>
                       </div>
                     </div>
@@ -642,8 +685,8 @@ export default function PaginaTelao() {
           </div>
         </section>
 
-        {/* PAINEL INTEGRAL AGRUPADO POR BLOCO COM DIVISÕES VISUAIS CLARAS + BOTÃO MAXIMIZAR */}
-        <section className="flex-1 min-h-0 rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3.5 py-2.5 2xl:px-4 2xl:py-3 flex flex-col overflow-hidden">
+        {/* PAINEL INTEGRAL RESPONSIVO AGRUPADO POR BLOCO COM MARCA DE PROCURAÇÃO [P] E TELA INTEIRA */}
+        <section className="flex-1 min-h-0 rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3 py-2.5 2xl:px-4 2xl:py-3 flex flex-col overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-800/90 shrink-0">
             <div className="flex items-center gap-2">
               <h2 className="text-xs sm:text-sm 2xl:text-base font-extrabold text-white">
@@ -653,30 +696,36 @@ export default function PaginaTelao() {
               </h2>
             </div>
 
-            {/* Legenda de Cores Semânticas + Alternador de Modo + Botão Maximizar no Canto Superior Direito */}
-            <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-slate-300">
-              <span className="inline-flex items-center gap-1.5">
+            {/* Legenda de Cores Semânticas + Marca de Procuração [P] + Alternador + Botão Tela Inteira */}
+            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 text-[11px] font-bold text-slate-300">
+              <span className="inline-flex items-center gap-1">
                 <span className="w-3 h-3 rounded-sm bg-emerald-600 border border-emerald-300" />
                 SIM
               </span>
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1">
                 <span className="w-3 h-3 rounded-sm bg-rose-600 border border-rose-300" />
                 NÃO
               </span>
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1">
                 <span className="w-3 h-3 rounded-sm bg-sky-600 border border-sky-300" />
                 CONECTADO
               </span>
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1">
                 <span className="w-3 h-3 rounded-sm bg-violet-600 border border-violet-300" />
                 CONFIRMADO (PORTARIA)
               </span>
-              <span className="inline-flex items-center gap-1.5 text-slate-500">
+              <span className="inline-flex items-center gap-1 text-amber-300">
+                <span className="inline-flex items-center justify-center px-1 py-[1px] rounded bg-amber-300 text-[#0C0C0D] font-black text-[9px] leading-none">
+                  P
+                </span>
+                PROCURAÇÃO ({contadoresPresenca.comProcuracao})
+              </span>
+              <span className="inline-flex items-center gap-1 text-slate-500">
                 <span className="w-3 h-3 rounded-sm bg-slate-900 border border-slate-800" />
                 AUSENTE
               </span>
 
-              <div className="inline-flex items-center p-0.5 rounded-lg bg-slate-900 border border-slate-800 gap-1 ml-1">
+              <div className="inline-flex items-center p-0.5 rounded-lg bg-slate-900 border border-slate-800 gap-1">
                 <button
                   type="button"
                   onClick={() => setModoGrade('TODOS_OS_BLOCOS')}
@@ -729,19 +778,18 @@ export default function PaginaTelao() {
           </div>
 
           {modoGrade === 'TODOS_OS_BLOCOS' ? (
-            /* PAINEL AGRUPADO POR BLOCO COM DIVISÕES CLARAS (CADA BLOCO CONTÉM SEUS 16 APARTAMENTOS EM GRADE 4x4) */
+            /* PAINEL RESPONSIVO AGRUPADO POR BLOCO (ADAPTA A TABLETS, MONITORES E DATASHOWS 4:3 / 16:9) */
             <div
-              className="flex-1 min-h-0 grid gap-2 overflow-y-auto lg:overflow-hidden"
-              style={{
-                gridTemplateColumns: `repeat(${numColunasBlocos}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${numLinhasBlocos}, minmax(0, 1fr))`,
-              }}
+              className={`flex-1 min-h-0 grid ${classesGridResponsivoBlocos} auto-rows-fr gap-2 overflow-y-auto pr-0.5 custom-scrollbar`}
             >
               {metaEscopo.blocos.map((bloco) => {
                 let presentesNoBloco = 0;
+                let procuracoesNoBloco = 0;
                 for (const apto of TODOS_APARTAMENTOS) {
-                  if (mapaPresencas.has(chaveUnidade(bloco, apto))) {
+                  const pr = mapaPresencas.get(chaveUnidade(bloco, apto));
+                  if (pr) {
                     presentesNoBloco += 1;
+                    if (pr.com_procuracao) procuracoesNoBloco += 1;
                   }
                 }
 
@@ -759,15 +807,26 @@ export default function PaginaTelao() {
                       <span className="font-mono text-xs 2xl:text-sm font-black tracking-wide text-milano-gold">
                         BLOCO {formatarBloco(bloco)}
                       </span>
-                      <span
-                        className={`font-mono text-[10px] 2xl:text-xs font-extrabold px-1.5 py-0.2 rounded ${
-                          presentesNoBloco > 0
-                            ? 'bg-milano-gold/20 text-milano-gold-light'
-                            : 'text-slate-600'
-                        }`}
-                      >
-                        {presentesNoBloco}/16
-                      </span>
+                      <div className="flex items-center gap-1">
+                        {procuracoesNoBloco > 0 && (
+                          <span
+                            title={`${procuracoesNoBloco} procuração(ões) neste bloco`}
+                            className="inline-flex items-center gap-0.5 rounded bg-amber-300/20 border border-amber-300/50 px-1 py-0.2 font-mono text-[9px] font-black text-amber-300"
+                          >
+                            <FileCheck2 className="w-2.5 h-2.5" />
+                            {procuracoesNoBloco}P
+                          </span>
+                        )}
+                        <span
+                          className={`font-mono text-[10px] 2xl:text-xs font-extrabold px-1.5 py-0.2 rounded ${
+                            presentesNoBloco > 0
+                              ? 'bg-milano-gold/20 text-milano-gold-light'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          {presentesNoBloco}/16
+                        </span>
+                      </div>
                     </div>
 
                     {/* Grade 4x4 dos 16 Apartamentos do Bloco (101..104, 201..204, 301..304, 401..404) */}
@@ -783,6 +842,7 @@ export default function PaginaTelao() {
                             presente={Boolean(presenca)}
                             onlineConectado={Boolean(presenca?.online_conectado)}
                             isConstrutora={Boolean(presenca?.is_construtora)}
+                            comProcuracao={Boolean(presenca?.com_procuracao)}
                             voto={mapaVotosPauta.get(ch)}
                             mostrarBlocoPrefix={false}
                             expandido={false}
@@ -809,7 +869,7 @@ export default function PaginaTelao() {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 xl:grid-cols-12 2xl:grid-cols-14 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-2">
                   {unidadesPresentesAptas.map((u) => (
                     <CelulaUnidadeTelao
                       key={u.id}
@@ -818,6 +878,7 @@ export default function PaginaTelao() {
                       presente={true}
                       onlineConectado={Boolean(u.online_conectado)}
                       isConstrutora={u.is_construtora}
+                      comProcuracao={Boolean(u.com_procuracao)}
                       voto={mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento))}
                       mostrarBlocoPrefix={true}
                       expandido={true}
