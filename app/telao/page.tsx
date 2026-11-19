@@ -565,9 +565,16 @@ export default function PaginaTelao() {
               </div>
 
               <h1 className="text-sm sm:text-base 2xl:text-xl font-extrabold text-white tracking-tight truncate">
-                {pautaExibida
-                  ? pautaExibida.titulo
-                  : 'Confirme presença na recepção e acesse votar.portalmilano.com'}
+                {pautaExibida ? (
+                  pautaExibida.titulo
+                ) : (
+                  <>
+                    Confirme presença na recepção e acesse{' '}
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-milano-gold/20 border border-milano-gold/70 font-mono font-black text-milano-gold shadow-sm">
+                      votar.portalmilano.com
+                    </span>
+                  </>
+                )}
               </h1>
             </div>
 
@@ -863,9 +870,12 @@ export default function PaginaTelao() {
                   <p className="text-base font-semibold text-slate-300">
                     Aguardando confirmação de unidades para este escopo
                   </p>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-slate-400">
                     Assim que a portaria confirmar a entrada ou o morador validar em{' '}
-                    {dominioLegivel}, as unidades aparecerão instantaneamente aqui.
+                    <span className="font-mono font-extrabold text-milano-gold">
+                      {dominioLegivel}
+                    </span>
+                    , as unidades aparecerão instantaneamente aqui.
                   </p>
                 </div>
               ) : (
