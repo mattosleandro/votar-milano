@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { obterInfoBloco, unidadePertenceAoEscopo } from '@/lib/condominio';
 import { exportarPacoteCompletoAssembleiaCsv } from '@/lib/csv';
-import { getSupabaseAuthClient } from '@/lib/supabase';
+import { getSupabaseAuthClient, getSupabasePublicClient } from '@/lib/supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   AppRole,
   AssembleiaConfig,
@@ -64,6 +65,48 @@ function assembleiaParaConfig(asm: AssembleiaRegistro | null): AssembleiaConfig 
   };
 }
 
+const PAGE_SIZE_PGRST = 1000;
+
+/**
+ * Busca TODOS os votos de uma assembleia paginando em blocos de 1.000 linhas,
+ * eliminando o risco de truncamento silencioso por PGRST_DB_MAX_ROWS=1000
+ * (ex.: 544 unidades x 12 pautas = 6.528 votos).
+ */
+async function buscarTodosVotosPaginados(
+  supabase: SupabaseClient,
+  assembleiaId: string
+): Promise<{ data: VotoUnidade[]; error: Error | null }> {
+  const acumulado: VotoUnidade[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('assembleia_votos')
+      .select(
+        'id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, idempotency_key, ip_address, device_id, device_name, updated_at'
+      )
+      .eq('assembleia_id', assembleiaId)
+      .order('id', { ascending: true })
+      .range(offset, offset + PAGE_SIZE_PGRST - 1);
+
+    if (error) {
+      return { data: [], error: new Error(error.message) };
+    }
+
+    const lote = (data ?? []) as VotoUnidade[];
+    acumulado.push(...lote);
+
+    if (lote.length < PAGE_SIZE_PGRST) {
+      break;
+    }
+    offset += PAGE_SIZE_PGRST;
+    // Guarda de segurança (50.000 votos em uma única assembleia)
+    if (offset >= 50_000) break;
+  }
+
+  return { data: acumulado, error: null };
+}
+
 export interface ResultadoOperacaoAdmin {
   ok: boolean;
   mensagem: string;
@@ -87,173 +130,241 @@ export function useAssembleiaAdminRealtime(
   const [carregandoInicial, setCarregandoInicial] = useState(true);
   const [erroConexao, setErroConexao] = useState<string | null>(null);
   const [statusConexao, setStatusConexao] = useState<ConexaoRealtimeStatus>('CONECTANDO');
+  const [realtimeAtivo, setRealtimeAtivo] = useState(false);
 
   const isFetchingRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const baseUnidadesCarregadaRef = useRef(false);
+  const pendingBroadcastTimerRef = useRef<number | null>(null);
   const isAdmin = role === 'admin';
 
-  const recarregarTudo = useCallback(async () => {
-    if (!autenticado || isFetchingRef.current) return;
-    isFetchingRef.current = true;
+  const recarregarTudo = useCallback(
+    async (opcoes?: { forcar?: boolean; recarregarUnidades?: boolean }) => {
+      if (!autenticado) return;
+      const forcar = opcoes?.forcar ?? true;
+      const recarregarUnidades =
+        opcoes?.recarregarUnidades ?? !baseUnidadesCarregadaRef.current;
 
-    try {
-      const supabase = getSupabaseAuthClient();
+      const agora = Date.now();
+      if (isFetchingRef.current) return;
+      if (!forcar && agora - lastFetchAtRef.current < 1500) return;
 
-      // 1. Busca lista de assembleias (para suportar ativa + históricas como 19/11/2026)
-      const { data: asmList, error: errAsm } = await supabase
-        .from('assembleias')
-        .select('*')
-        .order('data_assembleia', { ascending: false })
-        .order('created_at', { ascending: false });
+      isFetchingRef.current = true;
+      lastFetchAtRef.current = agora;
 
-      if (errAsm) throw errAsm;
+      try {
+        const supabase = getSupabaseAuthClient();
 
-      const listaAsm = (asmList ?? []) as AssembleiaRegistro[];
-      setAssembleias(listaAsm);
+        // 1. Busca lista de assembleias (para suportar ativa + históricas como 19/11/2026)
+        const { data: asmList, error: errAsm } = await supabase
+          .from('assembleias')
+          .select('*')
+          .order('data_assembleia', { ascending: false })
+          .order('created_at', { ascending: false });
 
-      const asmAtiva = listaAsm.find((a) => a.status === 'ativa') ?? null;
-      const asmFoco =
-        (assembleiaSelecionadaId
-          ? listaAsm.find((a) => a.id === assembleiaSelecionadaId)
-          : null) ??
-        asmAtiva ??
-        listaAsm[0] ??
-        null;
+        if (errAsm) throw errAsm;
 
-      if (asmFoco && asmFoco.id !== assembleiaSelecionadaId) {
-        setAssembleiaSelecionadaId(asmFoco.id);
-      }
+        const listaAsm = (asmList ?? []) as AssembleiaRegistro[];
+        setAssembleias(listaAsm);
 
-      setConfig(assembleiaParaConfig(asmFoco));
+        const asmAtiva = listaAsm.find((a) => a.status === 'ativa') ?? null;
+        const asmFoco =
+          (assembleiaSelecionadaId
+            ? listaAsm.find((a) => a.id === assembleiaSelecionadaId)
+            : null) ??
+          asmAtiva ??
+          listaAsm[0] ??
+          null;
 
-      const asmId = asmFoco?.id ?? null;
+        if (asmFoco && asmFoco.id !== assembleiaSelecionadaId) {
+          setAssembleiaSelecionadaId(asmFoco.id);
+        }
 
-      // 2. Carregamento respeitando menor privilégio por perfil (portaria não consulta votos/pautas/histórico!)
-      const [unidadesRes, presencasRes, inadRes] = await Promise.all([
-        supabase
-          .from('assembleia_unidades')
-          .select(
-            'id, bloco, apartamento, fase, modulo, nome_completo, cpf, is_inadimplente, is_construtora, observacao, updated_at'
-          )
-          .order('bloco', { ascending: true })
-          .order('apartamento', { ascending: true }),
-        asmId
-          ? supabase
-              .from('assembleia_presencas')
-              .select(
-                'id, assembleia_id, bloco, apartamento, fase, modulo, nome_completo, cpf, cpf_procurador, is_construtora, confirmado_portaria, online_conectado, com_procuracao, observacao_portaria, conectado_em, ip_address, device_id, device_name, user_agent, created_at'
-              )
-              .eq('assembleia_id', asmId)
-              .order('bloco', { ascending: true })
-              .order('apartamento', { ascending: true })
-          : Promise.resolve({ data: [], error: null }),
-        asmId
-          ? supabase
-              .from('assembleia_inadimplentes')
-              .select('id, assembleia_id, bloco, apartamento, fase, modulo, observacao, created_at')
-              .eq('assembleia_id', asmId)
-              .order('bloco', { ascending: true })
-              .order('apartamento', { ascending: true })
-          : Promise.resolve({ data: [], error: null }),
-      ]);
+        setConfig(assembleiaParaConfig(asmFoco));
 
-      if (unidadesRes.error) throw unidadesRes.error;
-      if (presencasRes.error) throw presencasRes.error;
-      if (inadRes.error) throw inadRes.error;
+        const asmId = asmFoco?.id ?? null;
 
-      setUnidadesCadastradas((unidadesRes.data ?? []) as UnidadeCadastradaAdmin[]);
-      setPresencas((presencasRes.data ?? []) as PresencaAdmin[]);
-      setInadimplentes((inadRes.data ?? []) as InadimplenteAdmin[]);
-
-      if (isAdmin) {
-        const [pautasRes, votosRes, historicoRes, opsRes, audVotosRes] = await Promise.all([
+        // 2. Carregamento respeitando menor privilégio por perfil (carrega base de 544 unidades 1x ou sob demanda)
+        const [unidadesRes, presencasRes, inadRes] = await Promise.all([
+          recarregarUnidades
+            ? supabase
+                .from('assembleia_unidades')
+                .select(
+                  'id, bloco, apartamento, fase, modulo, nome_completo, cpf, is_inadimplente, is_construtora, observacao, updated_at'
+                )
+                .order('bloco', { ascending: true })
+                .order('apartamento', { ascending: true })
+            : Promise.resolve({ data: null, error: null }),
           asmId
             ? supabase
-                .from('assembleia_pautas')
+                .from('assembleia_presencas')
                 .select(
-                  'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
+                  'id, assembleia_id, bloco, apartamento, fase, modulo, nome_completo, cpf, cpf_procurador, is_construtora, confirmado_portaria, online_conectado, com_procuracao, observacao_portaria, conectado_em, ip_address, device_id, device_name, user_agent, created_at'
                 )
                 .eq('assembleia_id', asmId)
-                .order('ordem', { ascending: true })
-                .order('created_at', { ascending: true })
+                .order('bloco', { ascending: true })
+                .order('apartamento', { ascending: true })
             : Promise.resolve({ data: [], error: null }),
           asmId
             ? supabase
-                .from('assembleia_votos')
-                .select(
-                  'id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, idempotency_key, ip_address, device_id, device_name, updated_at'
-                )
+                .from('assembleia_inadimplentes')
+                .select('id, assembleia_id, bloco, apartamento, fase, modulo, observacao, created_at')
                 .eq('assembleia_id', asmId)
-            : Promise.resolve({ data: [], error: null }),
-          supabase
-            .from('assembleia_historico')
-            .select(
-              'id, assembleia_id, titulo, tipo_snapshot, sha256_hash, created_at, escopo_assembleia, convocacao_ativa, total_presentes, total_pautas, total_votos, dados_snapshot'
-            )
-            .order('created_at', { ascending: false })
-            .limit(40),
-          asmId
-            ? supabase
-                .from('assembleia_operacoes')
-                .select(
-                  'id, assembleia_id, pauta_id, operacao, actor_email, actor_role, actor_sub, justificativa, detalhes, recorded_at'
-                )
-                .eq('assembleia_id', asmId)
-                .order('recorded_at', { ascending: false })
-                .limit(150)
-            : Promise.resolve({ data: [], error: null }),
-          asmId
-            ? supabase
-                .from('assembleia_votos_auditoria')
-                .select(
-                  'id, assembleia_id, pauta_id, rodada, bloco, apartamento, acao, voto_anterior, voto_novo, is_construtora, idempotency_key, actor_role, actor_sub, ip_address, device_id, device_name, recorded_at'
-                )
-                .eq('assembleia_id', asmId)
-                .order('recorded_at', { ascending: false })
-                .limit(200)
+                .order('bloco', { ascending: true })
+                .order('apartamento', { ascending: true })
             : Promise.resolve({ data: [], error: null }),
         ]);
 
-        if (pautasRes.error) throw pautasRes.error;
-        if (votosRes.error) throw votosRes.error;
+        if (unidadesRes.error) throw unidadesRes.error;
+        if (presencasRes.error) throw presencasRes.error;
+        if (inadRes.error) throw inadRes.error;
 
-        setPautas((pautasRes.data ?? []) as PautaAssembleia[]);
-        setVotos((votosRes.data ?? []) as VotoUnidade[]);
-        if (!historicoRes.error && historicoRes.data) {
-          setHistoricoAssembleias(historicoRes.data as HistoricoAssembleia[]);
+        if (unidadesRes.data) {
+          setUnidadesCadastradas(unidadesRes.data as UnidadeCadastradaAdmin[]);
+          baseUnidadesCarregadaRef.current = true;
         }
-        if (!opsRes.error && opsRes.data) {
-          setOperacoesAuditoria(opsRes.data as OperacaoAssembleiaItem[]);
+        setPresencas((presencasRes.data ?? []) as PresencaAdmin[]);
+        setInadimplentes((inadRes.data ?? []) as InadimplenteAdmin[]);
+
+        if (isAdmin) {
+          const [pautasRes, votosRes, historicoRes, opsRes, audVotosRes] = await Promise.all([
+            asmId
+              ? supabase
+                  .from('assembleia_pautas')
+                  .select(
+                    'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
+                  )
+                  .eq('assembleia_id', asmId)
+                  .order('ordem', { ascending: true })
+                  .order('created_at', { ascending: true })
+              : Promise.resolve({ data: [], error: null }),
+            asmId
+              ? buscarTodosVotosPaginados(supabase, asmId)
+              : Promise.resolve({ data: [], error: null }),
+            supabase
+              .from('assembleia_historico')
+              .select(
+                'id, assembleia_id, titulo, tipo_snapshot, sha256_hash, created_at, escopo_assembleia, convocacao_ativa, total_presentes, total_pautas, total_votos, dados_snapshot'
+              )
+              .order('created_at', { ascending: false })
+              .limit(40),
+            asmId
+              ? supabase
+                  .from('assembleia_operacoes')
+                  .select(
+                    'id, assembleia_id, pauta_id, operacao, actor_email, actor_role, actor_sub, justificativa, detalhes, recorded_at'
+                  )
+                  .eq('assembleia_id', asmId)
+                  .order('recorded_at', { ascending: false })
+                  .limit(150)
+              : Promise.resolve({ data: [], error: null }),
+            asmId
+              ? supabase
+                  .from('assembleia_votos_auditoria')
+                  .select(
+                    'id, assembleia_id, pauta_id, rodada, bloco, apartamento, acao, voto_anterior, voto_novo, is_construtora, idempotency_key, actor_role, actor_sub, ip_address, device_id, device_name, recorded_at'
+                  )
+                  .eq('assembleia_id', asmId)
+                  .order('recorded_at', { ascending: false })
+                  .limit(200)
+              : Promise.resolve({ data: [], error: null }),
+          ]);
+
+          if (pautasRes.error) throw pautasRes.error;
+          if (votosRes.error) throw votosRes.error;
+
+          setPautas((pautasRes.data ?? []) as PautaAssembleia[]);
+          setVotos((votosRes.data ?? []) as VotoUnidade[]);
+          if (!historicoRes.error && historicoRes.data) {
+            setHistoricoAssembleias(historicoRes.data as HistoricoAssembleia[]);
+          }
+          if (!opsRes.error && opsRes.data) {
+            setOperacoesAuditoria(opsRes.data as OperacaoAssembleiaItem[]);
+          }
+          if (!audVotosRes.error && audVotosRes.data) {
+            setVotosAuditoria(audVotosRes.data as AuditoriaVotoItem[]);
+          }
         }
-        if (!audVotosRes.error && audVotosRes.data) {
-          setVotosAuditoria(audVotosRes.data as AuditoriaVotoItem[]);
-        }
+
+        setErroConexao(null);
+        setStatusConexao('AO_VIVO');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Falha ao sincronizar painel autenticado.';
+        setErroConexao(msg);
+        setStatusConexao('RECONECTANDO');
+      } finally {
+        isFetchingRef.current = false;
+        setCarregandoInicial(false);
       }
+    },
+    [assembleiaSelecionadaId, autenticado, isAdmin]
+  );
 
-      setErroConexao(null);
-      setStatusConexao('AO_VIVO');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Falha ao sincronizar painel autenticado.';
-      setErroConexao(msg);
-      setStatusConexao('RECONECTANDO');
-    } finally {
-      isFetchingRef.current = false;
-      setCarregandoInicial(false);
-    }
-  }, [assembleiaSelecionadaId, autenticado, isAdmin]);
+  // Assinatura ao canal Broadcast placar para atualizar /admin rapidamente sob novos votos/presenças
+  useEffect(() => {
+    if (!autenticado || !assembleiaSelecionadaId) return;
+
+    const supabasePublic = getSupabasePublicClient();
+    const canal = supabasePublic
+      .channel(`assembleia:${assembleiaSelecionadaId}:placar`, {
+        config: { broadcast: { self: false }, private: true },
+      })
+      .on('broadcast', { event: 'placar_update' }, () => {
+        if (pendingBroadcastTimerRef.current !== null) return;
+        const debounceMs = 650 + Math.floor(Math.random() * 450);
+        pendingBroadcastTimerRef.current = window.setTimeout(() => {
+          pendingBroadcastTimerRef.current = null;
+          if (document.visibilityState === 'visible') {
+            void recarregarTudo({ forcar: false, recarregarUnidades: false });
+          }
+        }, debounceMs);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeAtivo(true);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRealtimeAtivo(false);
+        }
+      });
+
+    return () => {
+      setRealtimeAtivo(false);
+      if (pendingBroadcastTimerRef.current !== null) {
+        window.clearTimeout(pendingBroadcastTimerRef.current);
+        pendingBroadcastTimerRef.current = null;
+      }
+      void supabasePublic.removeChannel(canal);
+    };
+  }, [assembleiaSelecionadaId, autenticado, recarregarTudo]);
 
   useEffect(() => {
     if (!autenticado) return;
-    void recarregarTudo();
+    void recarregarTudo({ forcar: true, recarregarUnidades: !baseUnidadesCarregadaRef.current });
 
-    const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void recarregarTudo();
-      }
-    }, 4000);
+    let timeoutId: number | null = null;
+    let ativo = true;
+
+    const agendarProximo = () => {
+      if (!ativo) return;
+      const baseMs = realtimeAtivo ? 14000 : 5000;
+      const jitterMs = Math.floor(Math.random() * (realtimeAtivo ? 4000 : 2000));
+      timeoutId = window.setTimeout(() => {
+        if (document.visibilityState === 'visible') {
+          void recarregarTudo({ forcar: false, recarregarUnidades: false }).finally(agendarProximo);
+        } else {
+          agendarProximo();
+        }
+      }, baseMs + jitterMs);
+    };
+
+    agendarProximo();
 
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible') {
-        void recarregarTudo();
+        const jitter = 200 + Math.floor(Math.random() * 900);
+        window.setTimeout(() => {
+          void recarregarTudo({ forcar: false, recarregarUnidades: false });
+        }, jitter);
       }
     };
 
@@ -261,11 +372,12 @@ export function useAssembleiaAdminRealtime(
     window.addEventListener('online', handleVisibilityOrOnline);
 
     return () => {
-      window.clearInterval(intervalId);
+      ativo = false;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
       document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       window.removeEventListener('online', handleVisibilityOrOnline);
     };
-  }, [autenticado, recarregarTudo]);
+  }, [autenticado, realtimeAtivo, recarregarTudo]);
 
   const assembleiaAtual = useMemo(
     () => assembleias.find((a) => a.id === assembleiaSelecionadaId) ?? assembleias[0] ?? null,
@@ -507,7 +619,7 @@ export function useAssembleiaAdminRealtime(
       );
 
       if (error) return { ok: false, mensagem: error.message };
-      await recarregarTudo();
+      await recarregarTudo({ forcar: true, recarregarUnidades: true });
       return {
         ok: true,
         mensagem: `Bloco ${String(dados.bloco).padStart(2, '0')} • Apto ${dados.apartamento} salvo no cadastro base!`,
@@ -555,7 +667,7 @@ export function useAssembleiaAdminRealtime(
         .upsert(payload, { onConflict: 'bloco,apartamento' });
 
       if (error) return { ok: false, mensagem: error.message };
-      await recarregarTudo();
+      await recarregarTudo({ forcar: true, recarregarUnidades: true });
       return {
         ok: true,
         mensagem: `${payload.length} unidade(s) importada(s)/atualizada(s) com sucesso no cadastro base!`,
@@ -577,7 +689,7 @@ export function useAssembleiaAdminRealtime(
         .eq('id', unidade.id);
 
       if (error) return { ok: false, mensagem: error.message };
-      await recarregarTudo();
+      await recarregarTudo({ forcar: true, recarregarUnidades: true });
       return {
         ok: true,
         mensagem: novoStatus
@@ -593,7 +705,7 @@ export function useAssembleiaAdminRealtime(
       const supabase = getSupabaseAuthClient();
       const { error } = await supabase.from('assembleia_unidades').delete().eq('id', id);
       if (error) return { ok: false, mensagem: error.message };
-      await recarregarTudo();
+      await recarregarTudo({ forcar: true, recarregarUnidades: true });
       return { ok: true, mensagem: 'Unidade removida do cadastro base.' };
     },
     [recarregarTudo]

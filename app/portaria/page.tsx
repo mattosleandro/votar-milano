@@ -18,10 +18,8 @@ import {
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
 import { AdminPortariaSection } from '@/components/admin/AdminPortariaSection';
-import {
-  ResultadoOperacaoAdmin,
-  useAssembleiaAdminRealtime,
-} from '@/hooks/useAssembleiaAdminRealtime';
+import { ResultadoOperacaoAdmin } from '@/hooks/useAssembleiaAdminRealtime';
+import { usePortariaRealtime } from '@/hooks/usePortariaRealtime';
 import { getSupabaseAuthClient } from '@/lib/supabase';
 import { AppRole } from '@/lib/types';
 
@@ -107,11 +105,12 @@ export default function PaginaPortaria() {
     presencas,
     inadimplentes,
     carregandoInicial,
+    erroConexao,
     statusConexao,
     recarregarTudo,
     confirmarPresencaPortaria,
-    removerPresencaMesa,
-  } = useAssembleiaAdminRealtime(autenticado, userRole || 'portaria');
+    removerPresencaPortaria,
+  } = usePortariaRealtime(autenticado);
 
   const handleAutenticar = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -351,6 +350,15 @@ export default function PaginaPortaria() {
           </div>
         )}
 
+        {erroConexao && (
+          <div
+            role="alert"
+            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-bold text-amber-950"
+          >
+            Oscilação na rede ({erroConexao}) — tentando reconectar automaticamente.
+          </div>
+        )}
+
         {carregandoInicial ? (
           <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-sm font-semibold text-slate-500">
             Carregando base de unidades...
@@ -362,7 +370,7 @@ export default function PaginaPortaria() {
             presencas={presencas}
             inadimplentes={inadimplentes}
             onConfirmarPortaria={confirmarPresencaPortaria}
-            onRemoverPresenca={removerPresencaMesa}
+            onRemoverPresenca={removerPresencaPortaria}
             onNotificar={notificar}
           />
         )}
