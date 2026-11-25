@@ -1,12 +1,11 @@
 'use client';
 
-import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
   BarChart3,
   Building2,
   CheckCircle2,
-  FileCheck2,
   Filter,
   LayoutGrid,
   Maximize2,
@@ -20,6 +19,14 @@ import {
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
 import {
+  calcularDensidadeTelao,
+  DadosBlocoTelao,
+  ItemUnidadeBlocoTelao,
+  obterClassesGridBlocos,
+  TelaoBlocoCard,
+  TelaoCelulaUnidade,
+} from '@/components/telao/TelaoBlocoCard';
+import {
   TelaoRelogioConvocacao,
   TelaoTimerVotacao,
 } from '@/components/telao/TelaoClockWidgets';
@@ -28,8 +35,6 @@ import {
   calcularPlacarPauta,
   calcularQuorumEscopo,
   chaveUnidade,
-  formatarBloco,
-  formatarUnidadeTelaoCompacta,
   obterInfoBloco,
   obterMetadadosEscopo,
   TODOS_APARTAMENTOS,
@@ -46,100 +51,6 @@ import {
 type AbaTelao = 'PRESENTES_POR_BLOCO' | 'TODOS_OS_BLOCOS' | 'PLACAR_CONSOLIDADO';
 type FiltroFaseTelao = 'TODAS' | FaseCondominio;
 type FiltroModuloTelao = 'TODOS' | ModuloCondominio;
-
-interface CelulaUnidadeTelaoProps {
-  bloco: number;
-  apartamento: number;
-  presente: boolean;
-  onlineConectado: boolean;
-  isConstrutora: boolean;
-  comProcuracao: boolean;
-  voto?: OpcaoVoto;
-  mostrarBlocoPrefix?: boolean;
-  expandido?: boolean;
-}
-
-const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
-  bloco,
-  apartamento,
-  presente,
-  onlineConectado,
-  isConstrutora,
-  comProcuracao,
-  voto,
-  mostrarBlocoPrefix = false,
-  expandido = false,
-}: CelulaUnidadeTelaoProps) {
-  let classesCor = 'bg-slate-900/65 border-slate-800/90 text-slate-500';
-
-  if (voto === 'SIM') {
-    classesCor =
-      'bg-emerald-600 border-emerald-300 text-white shadow-sm shadow-emerald-950/80';
-  } else if (voto === 'NAO') {
-    classesCor =
-      'bg-rose-600 border-rose-300 text-white shadow-sm shadow-rose-950/80';
-  } else if (presente && (onlineConectado || isConstrutora)) {
-    classesCor =
-      'bg-sky-600 border-sky-300 text-white shadow-sm shadow-sky-950/70';
-  } else if (presente) {
-    classesCor =
-      'bg-violet-600 border-violet-300 text-white shadow-sm shadow-violet-950/70';
-  }
-
-  const destaqueEspecial = isConstrutora
-    ? 'ring-1 ring-milano-gold'
-    : comProcuracao
-      ? 'ring-1 ring-amber-300'
-      : '';
-
-  const tituloTooltip = isConstrutora
-    ? `${formatarUnidadeTelaoCompacta(bloco, apartamento)} (Construtora)`
-    : comProcuracao
-      ? `${formatarUnidadeTelaoCompacta(bloco, apartamento)} (Com Procuração)`
-      : formatarUnidadeTelaoCompacta(bloco, apartamento);
-
-  return (
-    <div
-      title={tituloTooltip}
-      className={`relative rounded border transition-colors duration-150 flex items-center justify-center gap-0.5 text-center select-none overflow-hidden ${classesCor} ${destaqueEspecial} ${
-        expandido
-          ? 'px-2 py-2 min-h-[38px]'
-          : 'px-0.5 py-0.5 min-h-[20px] sm:min-h-[22px] xl:min-h-[19px] 2xl:min-h-[22px]'
-      }`}
-    >
-      <span
-        className={`font-mono font-extrabold tracking-tight tabular-nums leading-none whitespace-nowrap ${
-          expandido
-            ? 'text-xs sm:text-sm 2xl:text-base'
-            : 'text-[10px] sm:text-[11px] xl:text-[10px] 2xl:text-xs'
-        }`}
-      >
-        {mostrarBlocoPrefix
-          ? formatarUnidadeTelaoCompacta(bloco, apartamento)
-          : String(apartamento)}
-      </span>
-
-      {comProcuracao && (
-        <span
-          title="Unidade representada por Procuração"
-          className={`inline-flex items-center justify-center rounded bg-amber-300 text-[#0C0C0D] font-black leading-none shrink-0 shadow-xs ${
-            expandido
-              ? 'px-1.5 py-0.5 text-[10px] ml-1'
-              : 'px-1 py-[1px] text-[8px] 2xl:text-[9px]'
-          }`}
-        >
-          {expandido ? 'PROC' : 'P'}
-        </span>
-      )}
-
-      {isConstrutora && expandido && (
-        <span className="inline-flex items-center justify-center rounded bg-milano-gold text-[#0C0C0D] font-black leading-none px-1.5 py-0.5 text-[10px] ml-1 shrink-0">
-          CONST
-        </span>
-      )}
-    </div>
-  );
-});
 
 /** Interpreta texto de busca livre do telão (ex.: "26", "B26", "101", "26 101", "B26 | A101") */
 function parseBuscaBlocoApto(texto: string): {
@@ -342,20 +253,16 @@ export default function PaginaTelao() {
     presencas,
   ]);
 
-  // Agrupamento de presentes por bloco (para a aba "Presentes por Bloco" solicitada!)
-  const blocosApenasPresentes = useMemo(() => {
-    const grupos: {
-      bloco: number;
-      fase: FaseCondominio;
-      modulo: ModuloCondominio;
-      unidades: PresencaPublica[];
-      votosSim: number;
-      votosNao: number;
-      procuracoes: number;
-    }[] = [];
+  // Estrutura unificada de blocos e apartamentos (fonte única para Aba 1 e Aba 2)
+  const { blocosTodosDados, blocosPresentesDados } = useMemo(() => {
+    const todos: DadosBlocoTelao[] = [];
+    const apenasPresentes: DadosBlocoTelao[] = [];
 
     for (const bloco of blocosFiltrados) {
-      const unidadesDoBloco: PresencaPublica[] = [];
+      const info = obterInfoBloco(bloco);
+      const itensTodos: ItemUnidadeBlocoTelao[] = [];
+      const itensPresentes: ItemUnidadeBlocoTelao[] = [];
+
       let votosSim = 0;
       let votosNao = 0;
       let procuracoes = 0;
@@ -363,30 +270,53 @@ export default function PaginaTelao() {
       for (const apto of apartamentosFiltrados) {
         const ch = chaveUnidade(bloco, apto);
         const pr = mapaPresencas.get(ch);
-        if (pr) {
-          unidadesDoBloco.push(pr);
-          if (pr.com_procuracao) procuracoes += 1;
-          const v = mapaVotosPauta.get(ch);
-          if (v === 'SIM') votosSim += 1;
-          else if (v === 'NAO') votosNao += 1;
+        const voto = mapaVotosPauta.get(ch);
+        const presente = Boolean(pr);
+
+        const item: ItemUnidadeBlocoTelao = {
+          bloco,
+          apartamento: apto,
+          presente,
+          onlineConectado: Boolean(pr?.online_conectado),
+          isConstrutora: Boolean(pr?.is_construtora),
+          comProcuracao: Boolean(pr?.com_procuracao),
+          voto,
+        };
+
+        itensTodos.push(item);
+
+        if (presente) {
+          itensPresentes.push(item);
+          if (item.comProcuracao) procuracoes += 1;
+          if (voto === 'SIM') votosSim += 1;
+          else if (voto === 'NAO') votosNao += 1;
         }
       }
 
-      if (unidadesDoBloco.length > 0) {
-        const info = obterInfoBloco(bloco);
-        grupos.push({
-          bloco,
-          fase: info.fase,
-          modulo: info.modulo,
-          unidades: unidadesDoBloco,
-          votosSim,
-          votosNao,
-          procuracoes,
-        });
+      const presentesCount = itensPresentes.length;
+      const aguardandoVoto = Math.max(0, presentesCount - votosSim - votosNao);
+      const baseComum = {
+        bloco,
+        fase: info.fase,
+        modulo: info.modulo,
+        totalApartamentosBase: apartamentosFiltrados.length,
+        presentesCount,
+        votosSim,
+        votosNao,
+        aguardandoVoto,
+        procuracoes,
+      };
+
+      todos.push({ ...baseComum, unidades: itensTodos });
+      if (presentesCount > 0) {
+        apenasPresentes.push({ ...baseComum, unidades: itensPresentes });
       }
     }
 
-    return grupos;
+    return {
+      blocosTodosDados: todos,
+      blocosPresentesDados: apenasPresentes,
+    };
   }, [apartamentosFiltrados, blocosFiltrados, mapaPresencas, mapaVotosPauta]);
 
   const dominioLegivel = useMemo(() => {
@@ -397,37 +327,25 @@ export default function PaginaTelao() {
     }
   }, []);
 
-  const classesGridResponsivoBlocos = useMemo(() => {
-    const qtd = blocosFiltrados.length;
-    if (qtd > 20) {
-      return painelMaximizado
-        ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7'
-        : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7';
-    }
-    if (qtd > 12) {
-      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6';
-    }
-    if (qtd > 4) {
-      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
-    }
-    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
-  }, [blocosFiltrados.length, painelMaximizado]);
+  const densidadePresentes = useMemo(
+    () => calcularDensidadeTelao(blocosPresentesDados.length),
+    [blocosPresentesDados.length]
+  );
 
-  const classesGridPresentesPorBloco = useMemo(() => {
-    const qtd = blocosApenasPresentes.length;
-    if (qtd > 20) {
-      return painelMaximizado
-        ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
-        : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6';
-    }
-    if (qtd > 10) {
-      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5';
-    }
-    if (qtd > 4) {
-      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
-    }
-    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
-  }, [blocosApenasPresentes.length, painelMaximizado]);
+  const densidadeTodos = useMemo(
+    () => calcularDensidadeTelao(blocosTodosDados.length),
+    [blocosTodosDados.length]
+  );
+
+  const classesGridPresentes = useMemo(
+    () => obterClassesGridBlocos(densidadePresentes, painelMaximizado),
+    [densidadePresentes, painelMaximizado]
+  );
+
+  const classesGridTodos = useMemo(
+    () => obterClassesGridBlocos(densidadeTodos, painelMaximizado),
+    [densidadeTodos, painelMaximizado]
+  );
 
   const mostrarVencedor = pautaExibida?.status === 'encerrada' || timerEsgotado;
 
@@ -437,7 +355,7 @@ export default function PaginaTelao() {
           BARRA LATERAL ESQUERDA (Oculta em Tela Inteira)
          ===================================================================== */}
       {!painelMaximizado && (
-        <aside className="w-full xl:w-[285px] 2xl:w-[330px] shrink-0 bg-[#0C0C0D] border-b xl:border-b-0 xl:border-r border-milano-gold/25 p-3 2xl:p-4 flex flex-col justify-between gap-3">
+        <aside className="w-full xl:w-[285px] 2xl:w-[330px] shrink-0 bg-[#0C0C0D] border-b xl:border-b-0 xl:border-r border-milano-gold/25 p-3 2xl:p-4 flex flex-col justify-between gap-3 xl:overflow-y-auto custom-scrollbar">
           {/* Topo: Logo Oficial Branca + Dourada e Status WebSocket / Contingência */}
           <div className="flex items-center justify-between gap-2">
             <MilanoLogo variant="dark" className="h-8 2xl:h-9 w-auto" />
@@ -859,6 +777,14 @@ export default function PaginaTelao() {
                 </span>
                 PROC. ({contadoresPresenca.comProcuracao})
               </span>
+              {contadoresPresenca.construtora > 0 && (
+                <span className="inline-flex items-center gap-1 text-milano-gold-light">
+                  <span className="inline-flex items-center justify-center px-1 py-[1px] rounded bg-milano-gold text-[#0C0C0D] font-black text-[9px] leading-none">
+                    C
+                  </span>
+                  CONST. ({contadoresPresenca.construtora})
+                </span>
+              )}
               {abaAtiva === 'TODOS_OS_BLOCOS' && (
                 <span className="inline-flex items-center gap-1 text-slate-500">
                   <span className="w-2.5 h-2.5 rounded-sm bg-slate-900 border border-slate-800" />
@@ -975,11 +901,11 @@ export default function PaginaTelao() {
           </div>
 
           {/* ===================================================================
-              ABA 1: APENAS PRESENTES AGRUPADOS POR BLOCO (Visualização Limpa)
+              ABA 1: APENAS PRESENTES AGRUPADOS POR BLOCO (Padrão Único Responsivo)
              =================================================================== */}
           {abaAtiva === 'PRESENTES_POR_BLOCO' && (
             <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 custom-scrollbar">
-              {blocosApenasPresentes.length === 0 ? (
+              {blocosPresentesDados.length === 0 ? (
                 <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center text-slate-400 space-y-2">
                   <Users className="w-10 h-10 text-milano-gold/50" />
                   <p className="text-base font-bold text-slate-200">
@@ -1005,59 +931,14 @@ export default function PaginaTelao() {
                   )}
                 </div>
               ) : (
-                <div className={`grid ${classesGridPresentesPorBloco} gap-2.5`}>
-                  {blocosApenasPresentes.map((grupo) => (
-                    <div
-                      key={grupo.bloco}
-                      className="rounded-xl border border-milano-gold/45 bg-slate-900/75 p-2.5 flex flex-col gap-2 shadow-sm"
-                    >
-                      <div className="flex items-center justify-between gap-1.5 pb-1.5 border-b border-slate-800">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-mono text-sm 2xl:text-base font-black text-milano-gold">
-                            BLOCO {formatarBloco(grupo.bloco)}
-                          </span>
-                          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-300">
-                            F{grupo.fase}•M{grupo.modulo}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-1 shrink-0 font-mono text-[10px] font-black tabular-nums">
-                          {pautaExibida && grupo.votosSim > 0 && (
-                            <span className="rounded bg-emerald-600/30 border border-emerald-400/50 px-1.5 py-0.5 text-emerald-200">
-                              {grupo.votosSim}S
-                            </span>
-                          )}
-                          {pautaExibida && grupo.votosNao > 0 && (
-                            <span className="rounded bg-rose-600/30 border border-rose-400/50 px-1.5 py-0.5 text-rose-200">
-                              {grupo.votosNao}N
-                            </span>
-                          )}
-                          <span className="rounded bg-milano-gold/20 px-1.5 py-0.5 text-milano-gold-light">
-                            {grupo.unidades.length} pres.
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                        {grupo.unidades.map((u) => {
-                          const ch = chaveUnidade(u.bloco, u.apartamento);
-                          return (
-                            <CelulaUnidadeTelao
-                              key={u.id}
-                              bloco={u.bloco}
-                              apartamento={u.apartamento}
-                              presente={true}
-                              onlineConectado={Boolean(u.online_conectado)}
-                              isConstrutora={u.is_construtora}
-                              comProcuracao={Boolean(u.com_procuracao)}
-                              voto={mapaVotosPauta.get(ch)}
-                              mostrarBlocoPrefix={false}
-                              expandido={true}
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
+                <div className={`grid ${classesGridPresentes} items-stretch content-start`}>
+                  {blocosPresentesDados.map((dados) => (
+                    <TelaoBlocoCard
+                      key={dados.bloco}
+                      dados={dados}
+                      densidade={densidadePresentes}
+                      exibirResumoVotos={Boolean(pautaExibida)}
+                    />
                   ))}
                 </div>
               )}
@@ -1065,91 +946,36 @@ export default function PaginaTelao() {
           )}
 
           {/* ===================================================================
-              ABA 2: GRADE INTEGRAL COMPLETA POR BLOCO (4x4 — 34 Blocos)
+              ABA 2: GRADE INTEGRAL COMPLETA POR BLOCO (Mesmo Card & Padrão da Aba 1)
              =================================================================== */}
           {abaAtiva === 'TODOS_OS_BLOCOS' && (
-            <div
-              className={`flex-1 min-h-0 grid ${classesGridResponsivoBlocos} auto-rows-fr gap-2 overflow-y-auto pr-0.5 custom-scrollbar`}
-            >
-              {blocosFiltrados.map((bloco) => {
-                const info = obterInfoBloco(bloco);
-                let presentesNoBloco = 0;
-                let procuracoesNoBloco = 0;
-                for (const apto of apartamentosFiltrados) {
-                  const pr = mapaPresencas.get(chaveUnidade(bloco, apto));
-                  if (pr) {
-                    presentesNoBloco += 1;
-                    if (pr.com_procuracao) procuracoesNoBloco += 1;
-                  }
-                }
-
-                return (
-                  <div
-                    key={bloco}
-                    className={`rounded-xl border p-1.5 2xl:p-2 flex flex-col justify-between transition-colors ${
-                      presentesNoBloco > 0
-                        ? 'bg-slate-900/65 border-milano-gold/50 shadow-sm'
-                        : 'bg-slate-950/90 border-slate-800/90'
-                    }`}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 custom-scrollbar">
+              {blocosTodosDados.length === 0 ? (
+                <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center text-slate-400 space-y-2">
+                  <LayoutGrid className="w-10 h-10 text-milano-gold/50" />
+                  <p className="text-base font-bold text-slate-200">
+                    Nenhum bloco corresponde aos filtros selecionados
+                  </p>
+                  <button
+                    type="button"
+                    onClick={limparFiltros}
+                    className="rounded-lg bg-milano-gold px-3 py-1.5 text-xs font-black text-[#0C0C0D]"
                   >
-                    <div className="flex items-center justify-between px-1 pb-1 mb-1 border-b border-slate-800/90 shrink-0">
-                      <span className="font-mono text-xs 2xl:text-sm font-black tracking-wide text-milano-gold">
-                        B{formatarBloco(bloco)}{' '}
-                        <span className="text-[9px] font-bold text-slate-400">
-                          F{info.fase}•M{info.modulo}
-                        </span>
-                      </span>
-                      <div className="flex items-center gap-1">
-                        {procuracoesNoBloco > 0 && (
-                          <span
-                            title={`${procuracoesNoBloco} procuração(ões) neste bloco`}
-                            className="inline-flex items-center gap-0.5 rounded bg-amber-300/20 border border-amber-300/50 px-1 py-0.2 font-mono text-[9px] font-black text-amber-300"
-                          >
-                            <FileCheck2 className="w-2.5 h-2.5" />
-                            {procuracoesNoBloco}P
-                          </span>
-                        )}
-                        <span
-                          className={`font-mono text-[10px] 2xl:text-xs font-extrabold px-1.5 py-0.2 rounded ${
-                            presentesNoBloco > 0
-                              ? 'bg-milano-gold/20 text-milano-gold-light'
-                              : 'text-slate-600'
-                          }`}
-                        >
-                          {presentesNoBloco}/{apartamentosFiltrados.length}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div
-                      className={`flex-1 grid gap-1 ${
-                        apartamentosFiltrados.length === 1
-                          ? 'grid-cols-1'
-                          : 'grid-cols-4 grid-rows-4'
-                      }`}
-                    >
-                      {apartamentosFiltrados.map((apto) => {
-                        const ch = chaveUnidade(bloco, apto);
-                        const presenca = mapaPresencas.get(ch);
-                        return (
-                          <CelulaUnidadeTelao
-                            key={ch}
-                            bloco={bloco}
-                            apartamento={apto}
-                            presente={Boolean(presenca)}
-                            onlineConectado={Boolean(presenca?.online_conectado)}
-                            isConstrutora={Boolean(presenca?.is_construtora)}
-                            comProcuracao={Boolean(presenca?.com_procuracao)}
-                            voto={mapaVotosPauta.get(ch)}
-                            mostrarBlocoPrefix={false}
-                            expandido={apartamentosFiltrados.length === 1}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
+                    Limpar Filtros
+                  </button>
+                </div>
+              ) : (
+                <div className={`grid ${classesGridTodos} items-stretch content-start`}>
+                  {blocosTodosDados.map((dados) => (
+                    <TelaoBlocoCard
+                      key={dados.bloco}
+                      dados={dados}
+                      densidade={densidadeTodos}
+                      exibirResumoVotos={Boolean(pautaExibida)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -1252,9 +1078,9 @@ export default function PaginaTelao() {
                 {unidadesPresentesFiltradas.length === 0 ? (
                   <p className="text-xs text-slate-500">Nenhuma unidade presente neste filtro.</p>
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-2">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,122px),1fr))] gap-2">
                     {unidadesPresentesFiltradas.map((u) => (
-                      <CelulaUnidadeTelao
+                      <TelaoCelulaUnidade
                         key={u.id}
                         bloco={u.bloco}
                         apartamento={u.apartamento}
@@ -1263,8 +1089,8 @@ export default function PaginaTelao() {
                         isConstrutora={u.is_construtora}
                         comProcuracao={Boolean(u.com_procuracao)}
                         voto={mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento))}
+                        densidade="lista"
                         mostrarBlocoPrefix={true}
-                        expandido={true}
                       />
                     ))}
                   </div>
