@@ -67,6 +67,10 @@ interface AdminConvocacoesSectionProps {
     duracaoSegundos?: number
   ) => Promise<ResultadoOperacaoAdmin>;
   onSalvarAssembleia: (titulo: string) => Promise<ResultadoOperacaoAdmin>;
+  onEncerrarEArquivar: (
+    justificativa: string,
+    tituloArquivo?: string
+  ) => Promise<ResultadoOperacaoAdmin>;
   onResetarAssembleia: (manterCadastroBase: boolean) => Promise<ResultadoOperacaoAdmin>;
   onExcluirHistorico: (id: string) => Promise<ResultadoOperacaoAdmin>;
   onNotificar: (res: ResultadoOperacaoAdmin) => void;
@@ -108,6 +112,7 @@ export function AdminConvocacoesSection({
   onSalvarConfig,
   onControlarTimer,
   onSalvarAssembleia,
+  onEncerrarEArquivar,
   onResetarAssembleia,
   onExcluirHistorico,
   onNotificar,
@@ -126,11 +131,14 @@ export function AdminConvocacoesSection({
   const [salvando, setSalvando] = useState(false);
   const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
 
-  // Estados para Salvar Assembleia e Resetar Geral
+  // Estados para Salvar Assembleia, Encerrar & Arquivar SHA-256 e Resetar Geral
   const [tituloAssembleiaSalvar, setTituloAssembleiaSalvar] = useState<string>(() =>
     obterSugestaoTituloAssembleia()
   );
   const [salvandoAssembleia, setSalvandoAssembleia] = useState(false);
+  const [justificativaEncerramento, setJustificativaEncerramento] = useState('');
+  const [confirmarEncerrarArquivar, setConfirmarEncerrarArquivar] = useState(false);
+  const [arquivandoOficial, setArquivandoOficial] = useState(false);
   const [confirmarResetGeral, setConfirmarResetGeral] = useState(false);
   const [manterBaseNoReset, setManterBaseNoReset] = useState(true);
   const [resetandoGeral, setResetandoGeral] = useState(false);
@@ -247,6 +255,18 @@ export function AdminConvocacoesSection({
     setSalvandoAssembleia(true);
     const res = await onSalvarAssembleia(tituloAssembleiaSalvar);
     setSalvandoAssembleia(false);
+    onNotificar(res);
+  };
+
+  const handleExecutarEncerrarEArquivar = async () => {
+    if (arquivandoOficial) return;
+    setArquivandoOficial(true);
+    const res = await onEncerrarEArquivar(justificativaEncerramento, tituloAssembleiaSalvar);
+    setArquivandoOficial(false);
+    if (res.ok) {
+      setConfirmarEncerrarArquivar(false);
+      setJustificativaEncerramento('');
+    }
     onNotificar(res);
   };
 
@@ -751,9 +771,63 @@ export function AdminConvocacoesSection({
               </div>
               <p className="mt-1.5 text-[11px] text-slate-500">
                 Salva os {presencas.length} check-ins, {pautas.length} pauta(s) e {votos.length}{' '}
-                voto(s) no histórico e baixa o arquivo CSV completo da assembleia.
+                voto(s) no histórico com hash <strong>SHA-256</strong> e baixa o CSV completo.
               </p>
             </div>
+
+            {config.status === 'ativa' && (
+              <div className="rounded-xl border border-slate-300 bg-white p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-900">
+                    Encerramento Oficial Atômico (Congela + Arquiva SHA-256)
+                  </span>
+                </div>
+                {!confirmarEncerrarArquivar ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmarEncerrarArquivar(true)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#0C0C0D] px-3.5 py-2 text-xs font-extrabold uppercase tracking-wider text-[#CCB285] hover:bg-slate-800"
+                  >
+                    <Lock className="h-3.5 w-3.5" />
+                    Encerrar e Arquivar Assembleia Oficialmente
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={justificativaEncerramento}
+                      onChange={(e) => setJustificativaEncerramento(e.target.value)}
+                      placeholder="Justificativa formal para a ata (mín. 10 caracteres). Ex.: Ordem do dia concluída..."
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none"
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={
+                          arquivandoOficial || justificativaEncerramento.trim().length < 10
+                        }
+                        onClick={() => void handleExecutarEncerrarEArquivar()}
+                        className="rounded-lg bg-rose-700 px-3 py-1.5 text-xs font-extrabold text-white hover:bg-rose-800 disabled:opacity-45"
+                      >
+                        {arquivandoOficial
+                          ? 'Arquivando com SHA-256...'
+                          : 'Confirmar Encerramento & Arquivamento Oficial'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmarEncerrarArquivar(false);
+                          setJustificativaEncerramento('');
+                        }}
+                        className="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-700"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </form>
 
           {/* Coluna 2: Resetar para Iniciar Nova Assembleia */}
@@ -827,13 +901,38 @@ export function AdminConvocacoesSection({
                   className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5"
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-xs font-extrabold text-slate-900">
-                      {item.titulo}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-xs font-extrabold text-slate-900">
+                        {item.titulo}
+                      </span>
+                      {item.tipo_snapshot && (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${
+                            item.tipo_snapshot === 'final'
+                              ? 'bg-[#0C0C0D] text-[#CCB285]'
+                              : item.tipo_snapshot === 'pauta_encerrada'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : item.tipo_snapshot === 'periodico'
+                                  ? 'bg-sky-100 text-sky-900'
+                                  : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {item.tipo_snapshot}
+                        </span>
+                      )}
                     </div>
                     <div className="text-[11px] text-slate-500">
                       {item.total_presentes} presentes • {item.total_pautas} pauta(s) •{' '}
                       {item.total_votos} voto(s)
                     </div>
+                    {item.sha256_hash && (
+                      <div
+                        title={`SHA-256 completo: ${item.sha256_hash}`}
+                        className="mt-0.5 font-mono text-[10px] font-semibold text-emerald-800"
+                      >
+                        SHA-256: {item.sha256_hash.slice(0, 16)}…
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -854,17 +953,19 @@ export function AdminConvocacoesSection({
                       Baixar CSV
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const res = await onExcluirHistorico(item.id);
-                        onNotificar(res);
-                      }}
-                      title="Excluir do histórico"
-                      className="rounded-lg border border-rose-200 bg-white p-1.5 text-rose-600 hover:bg-rose-50"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {item.tipo_snapshot !== 'final' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await onExcluirHistorico(item.id);
+                          onNotificar(res);
+                        }}
+                        title="Excluir snapshot não-oficial"
+                        className="rounded-lg border border-rose-200 bg-white p-1.5 text-rose-600 hover:bg-rose-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

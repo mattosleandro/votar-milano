@@ -187,15 +187,16 @@ export function useAssembleiaPublicRealtime(
           setUnidadesGrid(payload.unidades_grid ?? []);
         }
 
-        // No modo morador autenticado via JWT, consulta exclusivamente os próprios votos (RLS estrito)
+        // No modo morador autenticado via JWT, consulta exclusivamente os próprios votos da rodada vigente (RLS estrito)
         if (modo === 'morador' && moradorJwt && novaConfig.assembleia_id) {
-          const pautaFocoId = payload.pauta_aberta?.id ?? payload.ultima_pauta_encerrada?.id;
-          if (pautaFocoId) {
+          const pautaFoco = payload.pauta_aberta ?? payload.ultima_pauta_encerrada;
+          if (pautaFoco?.id) {
             const clientMorador = getSupabaseMoradorClient(moradorJwt);
             const { data: votosData } = await clientMorador
               .from('assembleia_votos')
-              .select('id, assembleia_id, pauta_id, bloco, apartamento, voto, is_construtora, updated_at')
-              .eq('pauta_id', pautaFocoId);
+              .select('id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, updated_at')
+              .eq('pauta_id', pautaFoco.id)
+              .eq('rodada', pautaFoco.rodada ?? 1);
             if (votosData) {
               setMeusVotos(votosData as VotoUnidade[]);
             }
@@ -297,7 +298,7 @@ export function useAssembleiaPublicRealtime(
       }));
   }, [meusVotos, modo, pautaAberta?.id, ultimaPautaEncerrada?.id, unidadesGrid]);
 
-  /** Registra voto exclusivamente via RPC autenticada por JWT do morador (validado no servidor) */
+  /** Registra voto exclusivamente via RPC autenticada por JWT do morador com chave de idempotência */
   const registrarVotoUnidade = useCallback(
     async (params: {
       jwtToken: string;
@@ -308,6 +309,10 @@ export function useAssembleiaPublicRealtime(
     }): Promise<{ ok: boolean; erro?: string; jaIgual?: boolean }> => {
       const telemetria = await coletarTelemetriaDispositivo();
       const clientMorador = getSupabaseMoradorClient(params.jwtToken);
+      const idempotencyKey =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? `voto-${params.pautaId}-${params.bloco}-${params.apartamento}-${crypto.randomUUID()}`
+          : `voto-${params.pautaId}-${params.bloco}-${params.apartamento}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
       const { data, error } = await clientMorador.rpc('assembleia_registrar_voto', {
         p_pauta_id: params.pautaId,
@@ -317,6 +322,7 @@ export function useAssembleiaPublicRealtime(
         p_ip_address: telemetria.ip_address,
         p_device_id: telemetria.device_id,
         p_device_name: telemetria.device_name,
+        p_idempotency_key: idempotencyKey,
       });
 
       if (error) {
@@ -328,6 +334,7 @@ export function useAssembleiaPublicRealtime(
         message?: string;
         ja_igual?: boolean;
         id?: string;
+        rodada?: number;
         updated_at?: string;
       };
 
@@ -338,6 +345,7 @@ export function useAssembleiaPublicRealtime(
       const novoVoto: VotoUnidade = {
         id: res.id || `${params.pautaId}-${params.bloco}-${params.apartamento}`,
         pauta_id: params.pautaId,
+        rodada: res.rodada ?? pautaAberta?.rodada ?? 1,
         bloco: params.bloco,
         apartamento: params.apartamento,
         voto: params.voto,
@@ -349,6 +357,7 @@ export function useAssembleiaPublicRealtime(
         const idx = atual.findIndex(
           (v) =>
             v.pauta_id === params.pautaId &&
+            (v.rodada ?? 1) === (novoVoto.rodada ?? 1) &&
             v.bloco === params.bloco &&
             v.apartamento === params.apartamento
         );
@@ -359,7 +368,7 @@ export function useAssembleiaPublicRealtime(
       void recarregarTudo(true);
       return { ok: true, jaIgual: Boolean(res.ja_igual) };
     },
-    [recarregarTudo]
+    [pautaAberta?.rodada, recarregarTudo]
   );
 
   return {

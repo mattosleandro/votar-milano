@@ -148,6 +148,9 @@ export interface PautaAssembleia {
   descricao: string | null;
   escopo: EscopoVotacao;
   status: StatusPauta;
+  rodada?: number;
+  version?: number;
+  motivo_ultima_rodada?: string | null;
   created_at: string;
   opened_at: string | null;
   closed_at: string | null;
@@ -157,10 +160,12 @@ export interface VotoUnidade {
   id: string;
   assembleia_id?: string;
   pauta_id: string;
+  rodada?: number;
   bloco: number;
   apartamento: number;
   voto: OpcaoVoto;
   is_construtora: boolean;
+  idempotency_key?: string | null;
   ip_address?: string | null;
   device_id?: string | null;
   device_name?: string | null;
@@ -199,6 +204,7 @@ export interface ContadoresPublicosAssembleia {
 
 export interface PlacarPublicoRpc {
   pauta_id: string;
+  rodada?: number;
   escopo: EscopoVotacao;
   presentes_aptos: number;
   sim: number;
@@ -206,6 +212,39 @@ export interface PlacarPublicoRpc {
   nao_votaram: number;
   total_votos: number;
   vencedor: 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS';
+}
+
+export interface AuditoriaVotoItem {
+  id: number;
+  assembleia_id: string;
+  pauta_id: string;
+  rodada: number;
+  bloco: number;
+  apartamento: number;
+  acao: 'INSERT' | 'UPDATE' | 'DELETE';
+  voto_anterior: string | null;
+  voto_novo: string | null;
+  is_construtora: boolean;
+  idempotency_key: string | null;
+  actor_role: string | null;
+  actor_sub: string | null;
+  ip_address: string | null;
+  device_id: string | null;
+  device_name: string | null;
+  recorded_at: string;
+}
+
+export interface OperacaoAssembleiaItem {
+  id: number;
+  assembleia_id: string | null;
+  pauta_id: string | null;
+  operacao: string;
+  actor_email: string | null;
+  actor_role: string | null;
+  actor_sub: string | null;
+  justificativa: string | null;
+  detalhes: Record<string, unknown>;
+  recorded_at: string;
 }
 
 export interface GridUnidadeTelaoItem {

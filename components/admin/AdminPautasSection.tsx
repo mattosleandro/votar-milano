@@ -42,7 +42,11 @@ interface AdminPautasSectionProps {
   }) => Promise<ResultadoOperacaoAdmin>;
   onAbrirPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
   onEncerrarPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
-  onResetarPauta: (pautaId: string, reabrir: boolean) => Promise<ResultadoOperacaoAdmin>;
+  onResetarPauta: (
+    pautaId: string,
+    reabrir: boolean,
+    justificativa: string
+  ) => Promise<ResultadoOperacaoAdmin>;
   onExcluirPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
   onControlarTimer?: (
     acao: 'INICIAR' | 'PAUSAR' | 'RESETAR',
@@ -71,6 +75,7 @@ export function AdminPautasSection({
 
   const [pautaEmOperacaoId, setPautaEmOperacaoId] = useState<string | null>(null);
   const [confirmarResetId, setConfirmarResetId] = useState<string | null>(null);
+  const [justificativaNovaRodada, setJustificativaNovaRodada] = useState('');
   const [confirmarExclusaoId, setConfirmarExclusaoId] = useState<string | null>(null);
   const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
 
@@ -126,6 +131,7 @@ export function AdminPautasSection({
     const res = await acao();
     setPautaEmOperacaoId(null);
     setConfirmarResetId(null);
+    setJustificativaNovaRodada('');
     setConfirmarExclusaoId(null);
     onNotificar(res);
   };
@@ -253,6 +259,10 @@ export function AdminPautasSection({
                         #{String(pauta.ordem).padStart(2, '0')}
                       </span>
 
+                      <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-extrabold text-slate-800">
+                        Rodada {pauta.rodada ?? 1}
+                      </span>
+
                       {aberta && (
                         <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-extrabold uppercase tracking-wider text-emerald-800">
                           <span className="h-2 w-2 animate-ping rounded-full bg-emerald-600" />
@@ -283,6 +293,21 @@ export function AdminPautasSection({
                     </h3>
                     {pauta.descricao && (
                       <p className="text-xs text-slate-600 sm:text-sm">{pauta.descricao}</p>
+                    )}
+                    {(pauta.rodada ?? 1) > 1 && (
+                      <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-900">
+                        Histórico preservado: Rodada anterior mantida intacta para auditoria (
+                        {
+                          votos.filter(
+                            (v) =>
+                              v.pauta_id === pauta.id && (v.rodada ?? 1) < (pauta.rodada ?? 1)
+                          ).length
+                        }{' '}
+                        voto(s) arquivados).
+                        {pauta.motivo_ultima_rodada
+                          ? ` Motivo: "${pauta.motivo_ultima_rodada}"`
+                          : ''}
+                      </p>
                     )}
                   </div>
 
@@ -529,47 +554,73 @@ export function AdminPautasSection({
                     )}
 
                     {confirmarResetId === pauta.id ? (
-                      <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5">
-                        <span className="text-xs font-bold text-amber-950">
-                          Apagar {placar.totalVotosRegistrados} voto(s)?
-                        </span>
-                        <button
-                          type="button"
-                          disabled={emOperacao}
-                          onClick={() =>
-                            void executarAcaoPauta(pauta.id, () => onResetarPauta(pauta.id, false))
-                          }
-                          className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700"
-                        >
-                          Zerar p/ Aguardando
-                        </button>
-                        <button
-                          type="button"
-                          disabled={emOperacao || !quorumPauta.podeAbrirVotacao}
-                          onClick={() =>
-                            void executarAcaoPauta(pauta.id, () => onResetarPauta(pauta.id, true))
-                          }
-                          className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-bold text-[#CCB285] hover:bg-slate-800 disabled:opacity-40"
-                        >
-                          Zerar e Reabrir
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmarResetId(null)}
-                          className="px-2 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
-                        >
-                          Cancelar
-                        </button>
+                      <div className="flex w-full flex-col gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-extrabold text-amber-950">
+                            Iniciar Rodada {(pauta.rodada ?? 1) + 1} (os {placar.totalVotosRegistrados}{' '}
+                            voto(s) da Rodada {pauta.rodada ?? 1} serão PRESERVADOS na auditoria)
+                          </span>
+                        </div>
+                        <input
+                          type="text"
+                          value={justificativaNovaRodada}
+                          onChange={(e) => setJustificativaNovaRodada(e.target.value)}
+                          placeholder="Justificativa obrigatória para a ata (mín. 10 caracteres). Ex.: Falha de projeção durante leitura..."
+                          className="w-full rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none"
+                        />
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={emOperacao || justificativaNovaRodada.trim().length < 10}
+                            onClick={() =>
+                              void executarAcaoPauta(pauta.id, () =>
+                                onResetarPauta(pauta.id, false, justificativaNovaRodada)
+                              )
+                            }
+                            className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-45"
+                          >
+                            Nova Rodada (Aguardando)
+                          </button>
+                          <button
+                            type="button"
+                            disabled={
+                              emOperacao ||
+                              !quorumPauta.podeAbrirVotacao ||
+                              justificativaNovaRodada.trim().length < 10
+                            }
+                            onClick={() =>
+                              void executarAcaoPauta(pauta.id, () =>
+                                onResetarPauta(pauta.id, true, justificativaNovaRodada)
+                              )
+                            }
+                            className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-bold text-[#CCB285] hover:bg-slate-800 disabled:opacity-40"
+                          >
+                            Nova Rodada e Abrir Agora
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmarResetId(null);
+                              setJustificativaNovaRodada('');
+                            }}
+                            className="px-2 py-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <button
                         type="button"
                         disabled={emOperacao}
-                        onClick={() => setConfirmarResetId(pauta.id)}
+                        onClick={() => {
+                          setConfirmarResetId(pauta.id);
+                          setJustificativaNovaRodada('');
+                        }}
                         className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50"
                       >
                         <RotateCcw className="h-3.5 w-3.5" />
-                        Resetar / Zerar Votos
+                        Nova Rodada (Não-Destrutivo)
                       </button>
                     )}
                   </div>

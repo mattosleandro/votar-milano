@@ -477,10 +477,11 @@ export interface PlacarPauta {
 }
 
 export function calcularPlacarPauta(
-  pauta: Pick<PautaAssembleia, 'id' | 'escopo'>,
+  pauta: Pick<PautaAssembleia, 'id' | 'escopo' | 'rodada'>,
   presencas: readonly PresencaPublica[],
   votos: readonly VotoUnidade[]
 ): PlacarPauta {
+  const rodadaAtiva = pauta.rodada ?? 1;
   const presentesMap = new Map<string, PresencaPublica>();
   for (const p of presencas) {
     if (unidadePertenceAoEscopo(p, pauta.escopo)) {
@@ -493,6 +494,7 @@ export function calcularPlacarPauta(
 
   for (const v of votos) {
     if (v.pauta_id !== pauta.id) continue;
+    if ((v.rodada ?? 1) !== rodadaAtiva) continue;
     const info = obterInfoBloco(v.bloco);
     if (!unidadePertenceAoEscopo(info, pauta.escopo)) continue;
 

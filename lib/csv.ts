@@ -191,12 +191,17 @@ export function exportarAuditoriaVotosCsv(params: {
     const pautaA = mapaPautas.get(a.pauta_id)?.ordem ?? 9999;
     const pautaB = mapaPautas.get(b.pauta_id)?.ordem ?? 9999;
     if (pautaA !== pautaB) return pautaA - pautaB;
+    const rA = a.rodada ?? 1;
+    const rB = b.rodada ?? 1;
+    if (rA !== rB) return rA - rB;
     if (a.bloco !== b.bloco) return a.bloco - b.bloco;
     return a.apartamento - b.apartamento;
   });
 
   const cabecalho = [
     'Ordem Pauta',
+    'Rodada',
+    'Status Rodada',
     'Título da Pauta',
     'Escopo da Pauta',
     'Status da Pauta',
@@ -217,6 +222,8 @@ export function exportarAuditoriaVotosCsv(params: {
 
   const linhasDados = votosFiltrados.map((v) => {
     const pauta = mapaPautas.get(v.pauta_id);
+    const rodadaVoto = v.rodada ?? 1;
+    const rodadaAtual = pauta?.rodada ?? 1;
     const presenca = mapaPresencas.get(chaveUnidade(v.bloco, v.apartamento));
     const infoBloco = obterInfoBloco(v.bloco);
     const blocoFmt = formatarBloco(v.bloco);
@@ -225,6 +232,8 @@ export function exportarAuditoriaVotosCsv(params: {
 
     return [
       pauta ? String(pauta.ordem) : '',
+      `Rodada ${rodadaVoto}`,
+      rodadaVoto === rodadaAtual ? 'VIGENTE' : 'RODADA ANTERIOR (HISTÓRICO)',
       pauta ? pauta.titulo : v.pauta_id,
       metaEscopo,
       pauta ? pauta.status.toUpperCase() : '',
@@ -386,10 +395,11 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
   }
   linhas.push([]);
 
-  // Seção 3: Auditoria Nominal de Todos os Votos
+  // Seção 3: Auditoria Nominal de Todos os Votos (incluindo todas as rodadas)
   linhas.push(['=== 3. AUDITORIA NOMINAL DE VOTOS POR PAUTA ===']);
   linhas.push([
     'Ordem Pauta',
+    'Rodada',
     'Título da Pauta',
     'Unidade',
     'Fase',
@@ -413,6 +423,9 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
     const oA = mapaPautas.get(a.pauta_id)?.ordem ?? 9999;
     const oB = mapaPautas.get(b.pauta_id)?.ordem ?? 9999;
     if (oA !== oB) return oA - oB;
+    const rA = a.rodada ?? 1;
+    const rB = b.rodada ?? 1;
+    if (rA !== rB) return rA - rB;
     return a.bloco - b.bloco || a.apartamento - b.apartamento;
   });
 
@@ -425,6 +438,7 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
 
     linhas.push([
       pauta ? String(pauta.ordem) : '',
+      `Rodada ${v.rodada ?? 1}`,
       pauta ? pauta.titulo : v.pauta_id,
       `B${bFmt} | A${v.apartamento}`,
       `Fase ${info.fase}`,

@@ -167,6 +167,7 @@ export default function PaginaAdminMesa() {
     atualizarPresencaMesa,
     removerPresencaMesa,
     salvarAssembleiaNoHistorico,
+    encerrarEArquivarAssembleia,
     resetarAssembleiaParaNova,
     excluirAssembleiaDoHistorico,
   } = useAssembleiaAdminRealtime(autenticado, 'admin');
@@ -713,6 +714,7 @@ export default function PaginaAdminMesa() {
                 onSalvarConfig={salvarConfiguracao}
                 onControlarTimer={controlarTimerTelao}
                 onSalvarAssembleia={salvarAssembleiaNoHistorico}
+                onEncerrarEArquivar={encerrarEArquivarAssembleia}
                 onResetarAssembleia={resetarAssembleiaParaNova}
                 onExcluirHistorico={excluirAssembleiaDoHistorico}
                 onNotificar={notificar}

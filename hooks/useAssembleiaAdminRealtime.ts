@@ -8,12 +8,14 @@ import {
   AppRole,
   AssembleiaConfig,
   AssembleiaRegistro,
+  AuditoriaVotoItem,
   ConexaoRealtimeStatus,
   EscopoVotacao,
   HistoricoAssembleia,
   InadimplenteAdmin,
   MapaInadimplentesPorEscopo,
   OpcaoVoto,
+  OperacaoAssembleiaItem,
   PautaAssembleia,
   PresencaAdmin,
   UnidadeCadastradaAdmin,
@@ -80,6 +82,8 @@ export function useAssembleiaAdminRealtime(
   const [pautas, setPautas] = useState<PautaAssembleia[]>([]);
   const [votos, setVotos] = useState<VotoUnidade[]>([]);
   const [historicoAssembleias, setHistoricoAssembleias] = useState<HistoricoAssembleia[]>([]);
+  const [operacoesAuditoria, setOperacoesAuditoria] = useState<OperacaoAssembleiaItem[]>([]);
+  const [votosAuditoria, setVotosAuditoria] = useState<AuditoriaVotoItem[]>([]);
   const [carregandoInicial, setCarregandoInicial] = useState(true);
   const [erroConexao, setErroConexao] = useState<string | null>(null);
   const [statusConexao, setStatusConexao] = useState<ConexaoRealtimeStatus>('CONECTANDO');
@@ -161,12 +165,12 @@ export function useAssembleiaAdminRealtime(
       setInadimplentes((inadRes.data ?? []) as InadimplenteAdmin[]);
 
       if (isAdmin) {
-        const [pautasRes, votosRes, historicoRes] = await Promise.all([
+        const [pautasRes, votosRes, historicoRes, opsRes, audVotosRes] = await Promise.all([
           asmId
             ? supabase
                 .from('assembleia_pautas')
                 .select(
-                  'id, assembleia_id, ordem, titulo, descricao, escopo, status, created_at, opened_at, closed_at'
+                  'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
                 )
                 .eq('assembleia_id', asmId)
                 .order('ordem', { ascending: true })
@@ -176,7 +180,7 @@ export function useAssembleiaAdminRealtime(
             ? supabase
                 .from('assembleia_votos')
                 .select(
-                  'id, assembleia_id, pauta_id, bloco, apartamento, voto, is_construtora, ip_address, device_id, device_name, updated_at'
+                  'id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, idempotency_key, ip_address, device_id, device_name, updated_at'
                 )
                 .eq('assembleia_id', asmId)
             : Promise.resolve({ data: [], error: null }),
@@ -185,7 +189,28 @@ export function useAssembleiaAdminRealtime(
             .select(
               'id, assembleia_id, titulo, tipo_snapshot, sha256_hash, created_at, escopo_assembleia, convocacao_ativa, total_presentes, total_pautas, total_votos, dados_snapshot'
             )
-            .order('created_at', { ascending: false }),
+            .order('created_at', { ascending: false })
+            .limit(40),
+          asmId
+            ? supabase
+                .from('assembleia_operacoes')
+                .select(
+                  'id, assembleia_id, pauta_id, operacao, actor_email, actor_role, actor_sub, justificativa, detalhes, recorded_at'
+                )
+                .eq('assembleia_id', asmId)
+                .order('recorded_at', { ascending: false })
+                .limit(150)
+            : Promise.resolve({ data: [], error: null }),
+          asmId
+            ? supabase
+                .from('assembleia_votos_auditoria')
+                .select(
+                  'id, assembleia_id, pauta_id, rodada, bloco, apartamento, acao, voto_anterior, voto_novo, is_construtora, idempotency_key, actor_role, actor_sub, ip_address, device_id, device_name, recorded_at'
+                )
+                .eq('assembleia_id', asmId)
+                .order('recorded_at', { ascending: false })
+                .limit(200)
+            : Promise.resolve({ data: [], error: null }),
         ]);
 
         if (pautasRes.error) throw pautasRes.error;
@@ -195,6 +220,12 @@ export function useAssembleiaAdminRealtime(
         setVotos((votosRes.data ?? []) as VotoUnidade[]);
         if (!historicoRes.error && historicoRes.data) {
           setHistoricoAssembleias(historicoRes.data as HistoricoAssembleia[]);
+        }
+        if (!opsRes.error && opsRes.data) {
+          setOperacoesAuditoria(opsRes.data as OperacaoAssembleiaItem[]);
+        }
+        if (!audVotosRes.error && audVotosRes.data) {
+          setVotosAuditoria(audVotosRes.data as AuditoriaVotoItem[]);
         }
       }
 
@@ -365,18 +396,26 @@ export function useAssembleiaAdminRealtime(
         .from('assembleias')
         .update(updatePayload)
         .eq('id', assembleiaAtual.id)
+        .eq('version', assembleiaAtual.version)
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (error) {
         return { ok: false, mensagem: error.message };
       }
 
-      if (data) {
-        const atualizada = data as AssembleiaRegistro;
-        setConfig(assembleiaParaConfig(atualizada));
-        setAssembleias((prev) => prev.map((a) => (a.id === atualizada.id ? atualizada : a)));
+      if (!data) {
+        await recarregarTudo();
+        return {
+          ok: false,
+          mensagem:
+            'Outro administrador atualizou a assembleia neste instante (conflito de versão). A tela foi sincronizada — tente novamente.',
+        };
       }
+
+      const atualizada = data as AssembleiaRegistro;
+      setConfig(assembleiaParaConfig(atualizada));
+      setAssembleias((prev) => prev.map((a) => (a.id === atualizada.id ? atualizada : a)));
 
       return {
         ok: true,
@@ -389,6 +428,7 @@ export function useAssembleiaAdminRealtime(
       config.horario_primeira_convocacao,
       config.horario_segunda_convocacao,
       criarNovaAssembleia,
+      recarregarTudo,
     ]
   );
 
@@ -589,7 +629,9 @@ export function useAssembleiaAdminRealtime(
           escopo: params.escopo,
           status: 'aguardando',
         })
-        .select('id, assembleia_id, ordem, titulo, descricao, escopo, status, created_at, opened_at, closed_at')
+        .select(
+          'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
+        )
         .single();
 
       if (error) return { ok: false, mensagem: error.message };
@@ -607,55 +649,86 @@ export function useAssembleiaAdminRealtime(
 
   const abrirPauta = useCallback(
     async (pautaId: string): Promise<ResultadoOperacaoAdmin> => {
+      const pautaAlvo = pautas.find((p) => p.id === pautaId);
       const supabase = getSupabaseAuthClient();
       const { data, error } = await supabase.rpc('assembleia_abrir_pauta', {
         p_pauta_id: pautaId,
+        p_expected_version: pautaAlvo?.version ?? null,
       });
       if (error) return { ok: false, mensagem: error.message };
       const resposta = (data ?? {}) as { ok?: boolean; message?: string };
+      await recarregarTudo();
       if (!resposta.ok) {
         return { ok: false, mensagem: resposta.message || 'Não foi possível abrir a pauta.' };
       }
-      await recarregarTudo();
       return { ok: true, mensagem: resposta.message || 'Votação aberta ao vivo!' };
     },
-    [recarregarTudo]
+    [pautas, recarregarTudo]
   );
 
   const encerrarPauta = useCallback(
     async (pautaId: string): Promise<ResultadoOperacaoAdmin> => {
+      const pautaAlvo = pautas.find((p) => p.id === pautaId);
       const supabase = getSupabaseAuthClient();
-      const { error } = await supabase
-        .from('assembleia_pautas')
-        .update({ status: 'encerrada', closed_at: new Date().toISOString() })
-        .eq('id', pautaId);
-      if (error) return { ok: false, mensagem: error.message };
-      await recarregarTudo();
-      return { ok: true, mensagem: 'Votação encerrada! Votos congelados.' };
-    },
-    [recarregarTudo]
-  );
-
-  const resetarPauta = useCallback(
-    async (pautaId: string, reabrir: boolean): Promise<ResultadoOperacaoAdmin> => {
-      const supabase = getSupabaseAuthClient();
-      const { data, error } = await supabase.rpc('assembleia_resetar_pauta', {
+      const { data, error } = await supabase.rpc('assembleia_encerrar_pauta', {
         p_pauta_id: pautaId,
-        p_reabrir: reabrir,
+        p_expected_version: pautaAlvo?.version ?? null,
       });
       if (error) return { ok: false, mensagem: error.message };
       const resposta = (data ?? {}) as { ok?: boolean; message?: string };
       await recarregarTudo();
       if (!resposta.ok) {
-        return { ok: false, mensagem: resposta.message || 'Não foi possível resetar a pauta.' };
+        return { ok: false, mensagem: resposta.message || 'Não foi possível encerrar a pauta.' };
+      }
+      return {
+        ok: true,
+        mensagem: resposta.message || 'Votação encerrada! Votos congelados e snapshot gravado.',
+      };
+    },
+    [pautas, recarregarTudo]
+  );
+
+  const resetarPauta = useCallback(
+    async (
+      pautaId: string,
+      reabrir: boolean,
+      justificativa: string
+    ): Promise<ResultadoOperacaoAdmin> => {
+      const justLimpa = justificativa.trim();
+      if (justLimpa.length < 10) {
+        return {
+          ok: false,
+          mensagem:
+            'Informe uma justificativa formal com pelo menos 10 caracteres para iniciar uma nova rodada.',
+        };
+      }
+      const pautaAlvo = pautas.find((p) => p.id === pautaId);
+      const supabase = getSupabaseAuthClient();
+      const { data, error } = await supabase.rpc('assembleia_resetar_pauta', {
+        p_pauta_id: pautaId,
+        p_reabrir: reabrir,
+        p_justificativa: justLimpa,
+        p_expected_version: pautaAlvo?.version ?? null,
+      });
+      if (error) return { ok: false, mensagem: error.message };
+      const resposta = (data ?? {}) as { ok?: boolean; message?: string };
+      await recarregarTudo();
+      if (!resposta.ok) {
+        return {
+          ok: false,
+          mensagem: resposta.message || 'Não foi possível iniciar nova rodada da pauta.',
+        };
       }
       return {
         ok: true,
         mensagem:
-          resposta.message || (reabrir ? 'Votos zerados e pauta reaberta!' : 'Pauta resetada.'),
+          resposta.message ||
+          (reabrir
+            ? 'Nova rodada aberta ao vivo (votos anteriores preservados)!'
+            : 'Nova rodada preparada (votos anteriores preservados).'),
       };
     },
-    [recarregarTudo]
+    [pautas, recarregarTudo]
   );
 
   const excluirPauta = useCallback(async (pautaId: string): Promise<ResultadoOperacaoAdmin> => {
@@ -763,9 +836,13 @@ export function useAssembleiaAdminRealtime(
         return { ok: false, mensagem: 'Nenhuma unidade da Construtora apta neste escopo.' };
       }
 
+      const pautaAlvo = pautas.find((p) => p.id === pautaId);
+      const rodadaAlvo = pautaAlvo?.rodada ?? 1;
+
       const payload = unidadesAptasConstrutora.map((u) => ({
         assembleia_id: assembleiaAtual.id,
         pauta_id: pautaId,
+        rodada: rodadaAlvo,
         bloco: u.bloco,
         apartamento: u.apartamento,
         voto,
@@ -775,16 +852,16 @@ export function useAssembleiaAdminRealtime(
       const supabase = getSupabaseAuthClient();
       const { error } = await supabase
         .from('assembleia_votos')
-        .upsert(payload, { onConflict: 'pauta_id,bloco,apartamento' });
+        .upsert(payload, { onConflict: 'pauta_id,rodada,bloco,apartamento' });
 
       if (error) return { ok: false, mensagem: error.message };
       await recarregarTudo();
       return {
         ok: true,
-        mensagem: `Voto em lote [${voto}] registrado para ${payload.length} unidade(s) da Construtora!`,
+        mensagem: `Voto em lote [${voto}] registrado na Rodada ${rodadaAlvo} para ${payload.length} unidade(s) da Construtora!`,
       };
     },
-    [assembleiaAtual, presencas, recarregarTudo]
+    [assembleiaAtual, pautas, presencas, recarregarTudo]
   );
 
   const adicionarUnidadesInadimplentes = useCallback(
@@ -960,28 +1037,27 @@ export function useAssembleiaAdminRealtime(
   );
 
   // ---------------------------------------------------------------------------
-  // 6. HISTÓRICO & RESET SEGURO DA ASSEMBLEIA ATIVA
+  // 6. HISTÓRICO SHA-256, ARQUIVAMENTO ATÔMICO & RESET SEGURO DA ASSEMBLEIA ATIVA
   // ---------------------------------------------------------------------------
   const salvarAssembleiaNoHistorico = useCallback(
     async (titulo: string): Promise<ResultadoOperacaoAdmin> => {
-      const tituloLimpo = titulo.trim() || assembleiaAtual?.titulo || 'Assembleia Geral Milano';
+      if (!assembleiaAtual) {
+        return { ok: false, mensagem: 'Nenhuma assembleia selecionada.' };
+      }
+      const tituloLimpo = titulo.trim() || assembleiaAtual.titulo || 'Assembleia Geral Milano';
       const supabase = getSupabaseAuthClient();
 
-      const snapshot = { config, presencas, pautas, votos };
-
-      const { error } = await supabase.from('assembleia_historico').insert({
-        assembleia_id: assembleiaAtual?.id ?? null,
-        titulo: tituloLimpo,
-        tipo_snapshot: 'manual',
-        escopo_assembleia: config.escopo_assembleia,
-        convocacao_ativa: config.convocacao_ativa,
-        total_presentes: presencas.length,
-        total_pautas: pautas.length,
-        total_votos: votos.length,
-        dados_snapshot: snapshot,
+      const { data, error } = await supabase.rpc('assembleia_gerar_snapshot', {
+        p_assembleia_id: assembleiaAtual.id,
+        p_tipo_snapshot: 'manual',
+        p_titulo: tituloLimpo,
       });
 
       if (error) return { ok: false, mensagem: error.message };
+      const res = (data ?? {}) as { ok?: boolean; message?: string; sha256_hash?: string };
+      if (!res.ok) {
+        return { ok: false, mensagem: res.message || 'Falha ao salvar snapshot no banco.' };
+      }
 
       exportarPacoteCompletoAssembleiaCsv({
         tituloAssembleia: tituloLimpo,
@@ -994,10 +1070,61 @@ export function useAssembleiaAdminRealtime(
       await recarregarTudo();
       return {
         ok: true,
-        mensagem: `Assembleia "${tituloLimpo}" salva no histórico e CSV completo baixado!`,
+        mensagem: `Snapshot "${tituloLimpo}" salvo com SHA-256 (${(res.sha256_hash || '').slice(0, 12)}...) e CSV baixado!`,
       };
     },
-    [assembleiaAtual?.id, assembleiaAtual?.titulo, config, pautas, presencas, recarregarTudo, votos]
+    [assembleiaAtual, config, pautas, presencas, recarregarTudo, votos]
+  );
+
+  const encerrarEArquivarAssembleia = useCallback(
+    async (justificativa: string, tituloArquivo?: string): Promise<ResultadoOperacaoAdmin> => {
+      if (!assembleiaAtual) {
+        return { ok: false, mensagem: 'Nenhuma assembleia selecionada.' };
+      }
+      const justLimpa = justificativa.trim();
+      if (justLimpa.length < 10) {
+        return {
+          ok: false,
+          mensagem:
+            'Informe uma justificativa formal com pelo menos 10 caracteres para encerrar e arquivar a assembleia.',
+        };
+      }
+
+      const supabase = getSupabaseAuthClient();
+      const { data, error } = await supabase.rpc('assembleia_encerrar_e_arquivar', {
+        p_assembleia_id: assembleiaAtual.id,
+        p_justificativa: justLimpa,
+        p_titulo_arquivo: tituloArquivo?.trim() || assembleiaAtual.titulo,
+      });
+
+      if (error) return { ok: false, mensagem: error.message };
+      const res = (data ?? {}) as {
+        ok?: boolean;
+        message?: string;
+        sha256_hash?: string;
+        titulo?: string;
+      };
+      if (!res.ok) {
+        return { ok: false, mensagem: res.message || 'Falha ao encerrar e arquivar assembleia.' };
+      }
+
+      exportarPacoteCompletoAssembleiaCsv({
+        tituloAssembleia: res.titulo || tituloArquivo?.trim() || assembleiaAtual.titulo,
+        config: { ...config, assembleia_ativa: false, convocacao_ativa: 'ENCERRADA' },
+        presencas,
+        pautas,
+        votos,
+      });
+
+      await recarregarTudo();
+      return {
+        ok: true,
+        mensagem:
+          res.message ||
+          `Assembleia encerrada e arquivada com SHA-256 (${(res.sha256_hash || '').slice(0, 16)}...)!`,
+      };
+    },
+    [assembleiaAtual, config, pautas, presencas, recarregarTudo, votos]
   );
 
   const resetarAssembleiaParaNova = useCallback(
@@ -1041,6 +1168,8 @@ export function useAssembleiaAdminRealtime(
     pautas,
     votos,
     historicoAssembleias,
+    operacoesAuditoria,
+    votosAuditoria,
     pautaAberta,
     carregandoInicial,
     erroConexao,
@@ -1068,6 +1197,7 @@ export function useAssembleiaAdminRealtime(
     atualizarPresencaMesa,
     removerPresencaMesa,
     salvarAssembleiaNoHistorico,
+    encerrarEArquivarAssembleia,
     resetarAssembleiaParaNova,
     excluirAssembleiaDoHistorico,
   };
