@@ -15,10 +15,12 @@ import {
   HistoricoAssembleia,
   InadimplenteAdmin,
   MapaInadimplentesPorEscopo,
+  OpcaoPauta,
   OpcaoVoto,
   OperacaoAssembleiaItem,
   PautaAssembleia,
   PresencaAdmin,
+  TipoVotacaoPauta,
   UnidadeCadastradaAdmin,
   VotoUnidade,
 } from '@/lib/types';
@@ -83,7 +85,7 @@ async function buscarTodosVotosPaginados(
     const { data, error } = await supabase
       .from('assembleia_votos')
       .select(
-        'id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, idempotency_key, ip_address, device_id, device_name, updated_at'
+        'id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, escolhas_json, is_construtora, idempotency_key, ip_address, device_id, device_name, updated_at'
       )
       .eq('assembleia_id', assembleiaId)
       .order('id', { ascending: true })
@@ -232,7 +234,7 @@ export function useAssembleiaAdminRealtime(
               ? supabase
                   .from('assembleia_pautas')
                   .select(
-                    'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
+                    'id, assembleia_id, ordem, titulo, descricao, escopo, tipo_votacao, opcoes_json, max_escolhas, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
                   )
                   .eq('assembleia_id', asmId)
                   .order('ordem', { ascending: true })
@@ -719,6 +721,9 @@ export function useAssembleiaAdminRealtime(
       titulo: string;
       descricao: string;
       escopo: EscopoVotacao;
+      tipo_votacao?: TipoVotacaoPauta;
+      opcoes?: string[];
+      max_escolhas?: number;
     }): Promise<ResultadoOperacaoAdmin> => {
       if (!assembleiaAtual || assembleiaAtual.status === 'encerrada') {
         return {
@@ -731,6 +736,37 @@ export function useAssembleiaAdminRealtime(
         return { ok: false, mensagem: 'Informe um título claro (mínimo 3 caracteres).' };
       }
 
+      const tipoVotacao: TipoVotacaoPauta = params.tipo_votacao ?? 'SIM_NAO';
+      let opcoesJson: OpcaoPauta[] = [];
+      let maxEscolhas = 1;
+
+      if (tipoVotacao !== 'SIM_NAO') {
+        const limpas = (params.opcoes ?? [])
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+        if (limpas.length < 2) {
+          return {
+            ok: false,
+            mensagem: 'Informe pelo menos 2 opções para pautas de múltipla escolha.',
+          };
+        }
+        if (limpas.length > 10) {
+          return {
+            ok: false,
+            mensagem: 'O limite máximo é de 10 opções por pauta.',
+          };
+        }
+        opcoesJson = limpas.map((label, idx) => ({
+          id: `OPT_${idx + 1}`,
+          sigla: String.fromCharCode(65 + idx),
+          label,
+        }));
+        maxEscolhas =
+          tipoVotacao === 'MULTIPLA_UNICA'
+            ? 1
+            : Math.min(Math.max(Number(params.max_escolhas ?? limpas.length), 2), limpas.length);
+      }
+
       const supabase = getSupabaseAuthClient();
       const { data, error } = await supabase
         .from('assembleia_pautas')
@@ -739,10 +775,13 @@ export function useAssembleiaAdminRealtime(
           titulo: tituloLimpo,
           descricao: params.descricao.trim() || null,
           escopo: params.escopo,
+          tipo_votacao: tipoVotacao,
+          opcoes_json: opcoesJson,
+          max_escolhas: maxEscolhas,
           status: 'aguardando',
         })
         .select(
-          'id, assembleia_id, ordem, titulo, descricao, escopo, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
+          'id, assembleia_id, ordem, titulo, descricao, escopo, tipo_votacao, opcoes_json, max_escolhas, status, rodada, version, motivo_ultima_rodada, created_at, opened_at, closed_at'
         )
         .single();
 
@@ -936,7 +975,8 @@ export function useAssembleiaAdminRealtime(
     async (
       pautaId: string,
       escopoPauta: EscopoVotacao,
-      voto: OpcaoVoto
+      voto: OpcaoVoto,
+      escolhas?: string[]
     ): Promise<ResultadoOperacaoAdmin> => {
       if (!assembleiaAtual) {
         return { ok: false, mensagem: 'Nenhuma assembleia selecionada.' };
@@ -950,6 +990,10 @@ export function useAssembleiaAdminRealtime(
 
       const pautaAlvo = pautas.find((p) => p.id === pautaId);
       const rodadaAlvo = pautaAlvo?.rodada ?? 1;
+      const isMultipla = voto === 'MULTIPLA' || (Array.isArray(escolhas) && escolhas.length > 0);
+      if (isMultipla && (!escolhas || escolhas.length === 0)) {
+        return { ok: false, mensagem: 'Selecione ao menos uma opção para votar em lote.' };
+      }
 
       const payload = unidadesAptasConstrutora.map((u) => ({
         assembleia_id: assembleiaAtual.id,
@@ -957,7 +1001,8 @@ export function useAssembleiaAdminRealtime(
         rodada: rodadaAlvo,
         bloco: u.bloco,
         apartamento: u.apartamento,
-        voto,
+        voto: isMultipla ? ('MULTIPLA' as OpcaoVoto) : voto,
+        escolhas_json: isMultipla ? escolhas : [voto],
         is_construtora: true,
       }));
 
@@ -970,7 +1015,7 @@ export function useAssembleiaAdminRealtime(
       await recarregarTudo();
       return {
         ok: true,
-        mensagem: `Voto em lote [${voto}] registrado na Rodada ${rodadaAlvo} para ${payload.length} unidade(s) da Construtora!`,
+        mensagem: `Voto em lote registrado na Rodada ${rodadaAlvo} para ${payload.length} unidade(s) da Construtora!`,
       };
     },
     [assembleiaAtual, pautas, presencas, recarregarTudo]

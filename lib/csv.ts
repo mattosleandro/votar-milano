@@ -2,6 +2,7 @@ import {
   calcularPlacarPauta,
   chaveUnidade,
   formatarBloco,
+  formatarVotoLegivel,
   FUSO_HORARIO_OFICIAL,
   obterInfoBloco,
   obterMetadadosEscopo,
@@ -95,10 +96,11 @@ function formatarCpfAuditoria(cpf: string, isConstrutora: boolean): string {
   return formatado || cpf;
 }
 
-function rotuloVotoCsv(voto: VotoUnidade['voto']): string {
-  if (voto === 'SIM') return 'SIM';
-  if (voto === 'NAO') return 'NÃO';
-  return 'ABSTENÇÃO';
+function rotuloVotoCsv(
+  voto: Pick<VotoUnidade, 'voto' | 'escolhas_json'>,
+  pauta?: PautaAssembleia
+): string {
+  return formatarVotoLegivel(voto, pauta);
 }
 
 export function exportarListaPresencaCsv(presencas: readonly PresencaAdmin[]): void {
@@ -255,7 +257,7 @@ export function exportarAuditoriaVotosCsv(params: {
         : isConstrutora
           ? 'CONSTRUTORA'
           : '',
-      rotuloVotoCsv(v.voto),
+      rotuloVotoCsv(v, pauta),
       v.ip_address || presenca?.ip_address || '',
       v.device_id || presenca?.device_id || '',
       v.device_name || presenca?.device_name || '',
@@ -326,14 +328,25 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
   const pautasOrdenadas = [...pautas].sort((a, b) => a.ordem - b.ordem);
   for (const p of pautasOrdenadas) {
     const placar = calcularPlacarPauta(p, presencas, votos);
+    const resumoOpcoes =
+      placar.tipoVotacao !== 'SIM_NAO'
+        ? placar.opcoes.map((o) => `${o.sigla}: ${o.label} (${o.votos})`).join(' | ')
+        : '';
     const rotuloResultado =
-      placar.vencedor === 'SIM'
-        ? 'VENCEDOR: MAIORIA SIM'
-        : placar.vencedor === 'NAO'
-          ? 'VENCEDOR: MAIORIA NÃO'
-          : placar.vencedor === 'EMPATE'
-            ? 'EMPATE'
-            : 'SEM VOTOS';
+      placar.tipoVotacao !== 'SIM_NAO'
+        ? placar.vencedor === 'SEM_VOTOS'
+          ? 'SEM VOTOS'
+          : `${placar.vencedor === 'EMPATE' ? 'EMPATE' : 'VENCEDOR'}: ${placar.opcoes
+              .filter((o) => o.ehVencedora)
+              .map((o) => `${o.sigla} - ${o.label} (${o.votos})`)
+              .join(' / ')} [${resumoOpcoes}]`
+        : placar.vencedor === 'SIM'
+          ? 'VENCEDOR: MAIORIA SIM'
+          : placar.vencedor === 'NAO'
+            ? 'VENCEDOR: MAIORIA NÃO'
+            : placar.vencedor === 'EMPATE'
+              ? 'EMPATE'
+              : 'SEM VOTOS';
     linhas.push([
       String(p.ordem),
       p.titulo,
@@ -341,10 +354,10 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
       p.status.toUpperCase(),
       rotuloResultado,
       String(placar.presentesAptos),
-      String(placar.sim),
-      `${placar.pctSimValidos.toFixed(1)}%`,
-      String(placar.nao),
-      `${placar.pctNaoValidos.toFixed(1)}%`,
+      placar.tipoVotacao === 'SIM_NAO' ? String(placar.sim) : '-',
+      placar.tipoVotacao === 'SIM_NAO' ? `${placar.pctSimValidos.toFixed(1)}%` : '-',
+      placar.tipoVotacao === 'SIM_NAO' ? String(placar.nao) : '-',
+      placar.tipoVotacao === 'SIM_NAO' ? `${placar.pctNaoValidos.toFixed(1)}%` : '-',
       String(placar.naoVotaram),
       `${placar.pctNaoVotaram.toFixed(1)}%`,
       String(placar.totalVotosRegistrados),
@@ -447,7 +460,7 @@ export function exportarPacoteCompletoAssembleiaCsv(params: {
       `Módulo ${info.modulo}`,
       pr ? pr.nome_completo : isConst ? 'CONSTRUTORA MILANO' : '(Presença removida)',
       pr ? formatarCpfAuditoria(pr.cpf, isConst) : isConst ? 'CONSTRUTORA' : '',
-      rotuloVotoCsv(v.voto),
+      rotuloVotoCsv(v, pauta),
       v.ip_address || pr?.ip_address || '',
       v.device_id || pr?.device_id || '',
       v.device_name || pr?.device_name || '',

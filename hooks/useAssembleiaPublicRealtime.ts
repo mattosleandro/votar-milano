@@ -79,6 +79,7 @@ interface TelaoGridDeltaPayload {
   b?: number;
   a?: number;
   voto?: OpcaoVoto | null;
+  escolhas?: string[];
   const?: boolean;
   unit?: {
     id: string;
@@ -188,7 +189,7 @@ export function useAssembleiaPublicRealtime(
       const clientMorador = getSupabaseMoradorClient(jwt);
       const { data: votosData } = await clientMorador
         .from('assembleia_votos')
-        .select('id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, updated_at')
+        .select('id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, escolhas_json, is_construtora, updated_at')
         .eq('pauta_id', pautaId)
         .eq('rodada', rodada);
       if (votosData) {
@@ -383,9 +384,13 @@ export function useAssembleiaPublicRealtime(
             }
 
             const novoVoto = delta.op === 'VOTO_UPSERT' ? (delta.voto ?? null) : null;
+            const novasEscolhas =
+              delta.op === 'VOTO_UPSERT' && Array.isArray(delta.escolhas) ? delta.escolhas : [];
             setUnidadesGrid((atual) =>
               atual.map((item) =>
-                item.b === delta.b && item.a === delta.a ? { ...item, voto: novoVoto } : item
+                item.b === delta.b && item.a === delta.a
+                  ? { ...item, voto: novoVoto, escolhas: novasEscolhas }
+                  : item
               )
             );
           }
@@ -490,6 +495,7 @@ export function useAssembleiaPublicRealtime(
         bloco: u.b,
         apartamento: u.a,
         voto: u.voto as OpcaoVoto,
+        escolhas_json: Array.isArray(u.escolhas) ? u.escolhas : [],
         is_construtora: u.const,
         updated_at: '',
       }));
@@ -502,7 +508,8 @@ export function useAssembleiaPublicRealtime(
       pautaId: string;
       bloco: number;
       apartamento: number;
-      voto: 'SIM' | 'NAO';
+      voto?: 'SIM' | 'NAO' | 'MULTIPLA';
+      escolhas?: string[];
     }): Promise<{ ok: boolean; erro?: string; jaIgual?: boolean }> => {
       const telemetria = await coletarTelemetriaDispositivo();
       const clientMorador = getSupabaseMoradorClient(params.jwtToken);
@@ -511,15 +518,19 @@ export function useAssembleiaPublicRealtime(
           ? `voto-${params.pautaId}-${params.bloco}-${params.apartamento}-${crypto.randomUUID()}`
           : `voto-${params.pautaId}-${params.bloco}-${params.apartamento}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+      const isMultipla = Array.isArray(params.escolhas) && params.escolhas.length > 0;
+      const votoEnviar: OpcaoVoto = isMultipla ? 'MULTIPLA' : (params.voto ?? 'SIM');
+
       const { data, error } = await clientMorador.rpc('assembleia_registrar_voto', {
         p_pauta_id: params.pautaId,
         p_bloco: params.bloco,
         p_apartamento: params.apartamento,
-        p_voto: params.voto,
+        p_voto: votoEnviar,
         p_ip_address: telemetria.ip_address,
         p_device_id: telemetria.device_id,
         p_device_name: telemetria.device_name,
         p_idempotency_key: idempotencyKey,
+        p_escolhas: isMultipla ? params.escolhas : null,
       });
 
       if (error) {
@@ -532,6 +543,8 @@ export function useAssembleiaPublicRealtime(
         ja_igual?: boolean;
         id?: string;
         rodada?: number;
+        voto?: OpcaoVoto;
+        escolhas_json?: string[];
         updated_at?: string;
       };
 
@@ -545,7 +558,12 @@ export function useAssembleiaPublicRealtime(
         rodada: res.rodada ?? pautaAberta?.rodada ?? 1,
         bloco: params.bloco,
         apartamento: params.apartamento,
-        voto: params.voto,
+        voto: res.voto ?? votoEnviar,
+        escolhas_json: Array.isArray(res.escolhas_json)
+          ? res.escolhas_json
+          : isMultipla
+            ? params.escolhas
+            : [votoEnviar],
         is_construtora: false,
         updated_at: res.updated_at || new Date().toISOString(),
       };

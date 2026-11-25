@@ -3,15 +3,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  CheckSquare,
+  CircleDot,
   Download,
   Lock,
   Pause,
   Play,
+  Plus,
   PlusCircle,
   RotateCcw,
   Square,
+  ThumbsUp,
   Timer,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   calcularPlacarPauta,
@@ -19,6 +24,9 @@ import {
   ESCOPOS_VOTACAO,
   formatarSegundosMMSS,
   obterMetadadosEscopo,
+  obterOpcoesPauta,
+  obterPaletaOpcaoMultipla,
+  obterTipoVotacaoPauta,
 } from '@/lib/condominio';
 import { exportarAuditoriaVotosCsv } from '@/lib/csv';
 import {
@@ -26,6 +34,7 @@ import {
   EscopoVotacao,
   PautaAssembleia,
   PresencaAdmin,
+  TipoVotacaoPauta,
   VotoUnidade,
 } from '@/lib/types';
 import { ResultadoOperacaoAdmin } from '@/hooks/useAssembleiaAdminRealtime';
@@ -39,6 +48,9 @@ interface AdminPautasSectionProps {
     titulo: string;
     descricao: string;
     escopo: EscopoVotacao;
+    tipo_votacao?: TipoVotacaoPauta;
+    opcoes?: string[];
+    max_escolhas?: number;
   }) => Promise<ResultadoOperacaoAdmin>;
   onAbrirPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
   onEncerrarPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
@@ -71,6 +83,9 @@ export function AdminPautasSection({
   const [titulo, setTitulo] = useState('');
   const [descricao, setDescricao] = useState('');
   const [escopo, setEscopo] = useState<EscopoVotacao>(config.escopo_assembleia || 'TODOS');
+  const [tipoVotacao, setTipoVotacao] = useState<TipoVotacaoPauta>('SIM_NAO');
+  const [opcoesTexto, setOpcoesTexto] = useState<string[]>(['', '']);
+  const [maxEscolhas, setMaxEscolhas] = useState<number>(2);
   const [criando, setCriando] = useState(false);
 
   const [pautaEmOperacaoId, setPautaEmOperacaoId] = useState<string | null>(null);
@@ -114,13 +129,41 @@ export function AdminPautasSection({
     e.preventDefault();
     if (criando) return;
     setCriando(true);
-    const res = await onCriarPauta({ titulo, descricao, escopo });
+    const opcoesLimpas = opcoesTexto.map((o) => o.trim()).filter(Boolean);
+    const res = await onCriarPauta({
+      titulo,
+      descricao,
+      escopo,
+      tipo_votacao: tipoVotacao,
+      opcoes: tipoVotacao === 'SIM_NAO' ? [] : opcoesLimpas,
+      max_escolhas:
+        tipoVotacao === 'MULTIPLA_VARIAS'
+          ? Math.min(Math.max(2, maxEscolhas), Math.max(2, opcoesLimpas.length))
+          : 1,
+    });
     setCriando(false);
     onNotificar(res);
     if (res.ok) {
       setTitulo('');
       setDescricao('');
+      setTipoVotacao('SIM_NAO');
+      setOpcoesTexto(['', '']);
+      setMaxEscolhas(2);
     }
+  };
+
+  const adicionarOpcaoCampo = () => {
+    if (opcoesTexto.length >= 10) return;
+    setOpcoesTexto((atual) => [...atual, '']);
+  };
+
+  const removerOpcaoCampo = (idx: number) => {
+    if (opcoesTexto.length <= 2) return;
+    setOpcoesTexto((atual) => {
+      const nova = atual.filter((_, i) => i !== idx);
+      setMaxEscolhas((m) => Math.min(m, nova.length));
+      return nova;
+    });
   };
 
   const executarAcaoPauta = async (
@@ -191,6 +234,175 @@ export function AdminPautasSection({
             </select>
           </div>
 
+          <div className="lg:col-span-12">
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-700">
+              Formato de Votação *
+            </label>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <button
+                type="button"
+                onClick={() => setTipoVotacao('SIM_NAO')}
+                className={`flex items-start gap-2.5 rounded-xl border-2 p-3 text-left transition ${
+                  tipoVotacao === 'SIM_NAO'
+                    ? 'border-[#0C0C0D] bg-[#0C0C0D] text-white shadow-sm'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-slate-300'
+                }`}
+              >
+                <ThumbsUp
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${
+                    tipoVotacao === 'SIM_NAO' ? 'text-[#CCB285]' : 'text-slate-500'
+                  }`}
+                />
+                <div>
+                  <div className="text-xs font-extrabold">SIM / NÃO (Padrão)</div>
+                  <div
+                    className={`text-[11px] ${
+                      tipoVotacao === 'SIM_NAO' ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    Aprovar ou Rejeitar a proposta
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTipoVotacao('MULTIPLA_UNICA')}
+                className={`flex items-start gap-2.5 rounded-xl border-2 p-3 text-left transition ${
+                  tipoVotacao === 'MULTIPLA_UNICA'
+                    ? 'border-[#0C0C0D] bg-[#0C0C0D] text-white shadow-sm'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-slate-300'
+                }`}
+              >
+                <CircleDot
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${
+                    tipoVotacao === 'MULTIPLA_UNICA' ? 'text-[#CCB285]' : 'text-slate-500'
+                  }`}
+                />
+                <div>
+                  <div className="text-xs font-extrabold">Múltipla Escolha — 1 Opção</div>
+                  <div
+                    className={`text-[11px] ${
+                      tipoVotacao === 'MULTIPLA_UNICA' ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    Cada unidade escolhe apenas 1 alternativa
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTipoVotacao('MULTIPLA_VARIAS')}
+                className={`flex items-start gap-2.5 rounded-xl border-2 p-3 text-left transition ${
+                  tipoVotacao === 'MULTIPLA_VARIAS'
+                    ? 'border-[#0C0C0D] bg-[#0C0C0D] text-white shadow-sm'
+                    : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:border-slate-300'
+                }`}
+              >
+                <CheckSquare
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${
+                    tipoVotacao === 'MULTIPLA_VARIAS' ? 'text-[#CCB285]' : 'text-slate-500'
+                  }`}
+                />
+                <div>
+                  <div className="text-xs font-extrabold">Múltipla Escolha — Várias</div>
+                  <div
+                    className={`text-[11px] ${
+                      tipoVotacao === 'MULTIPLA_VARIAS' ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    Permite marcar até N alternativas
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {tipoVotacao !== 'SIM_NAO' && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-3 lg:col-span-12">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-extrabold uppercase tracking-wider text-slate-800">
+                    Alternativas da Votação ({opcoesTexto.length} / 10)
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Cadastre entre 2 e 10 opções claras (ex.: Chapa 1, Empresa A, Horário 19h...).
+                  </p>
+                </div>
+
+                {tipoVotacao === 'MULTIPLA_VARIAS' && (
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5">
+                    <label
+                      htmlFor="pauta-max-escolhas"
+                      className="text-xs font-bold text-slate-700"
+                    >
+                      Máx. opções por unidade:
+                    </label>
+                    <select
+                      id="pauta-max-escolhas"
+                      value={Math.min(maxEscolhas, opcoesTexto.length)}
+                      onChange={(e) => setMaxEscolhas(Number(e.target.value))}
+                      className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 font-mono text-xs font-black text-slate-900"
+                    >
+                      {Array.from({ length: Math.max(1, opcoesTexto.length - 1) }, (_, i) => i + 2).map(
+                        (num) => (
+                          <option key={num} value={num}>
+                            Até {num} {num === opcoesTexto.length ? '(todas)' : 'opções'}
+                          </option>
+                        )
+                      )}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {opcoesTexto.map((val, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0C0C0D] font-mono text-xs font-black text-[#CCB285]">
+                      {String.fromCharCode(65 + idx)}
+                    </span>
+                    <input
+                      type="text"
+                      required
+                      value={val}
+                      onChange={(e) => {
+                        const novoValor = e.target.value;
+                        setOpcoesTexto((atual) =>
+                          atual.map((item, i) => (i === idx ? novoValor : item))
+                        );
+                      }}
+                      placeholder={`Texto da opção ${String.fromCharCode(65 + idx)}`}
+                      className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/40"
+                    />
+                    {opcoesTexto.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => removerOpcaoCampo(idx)}
+                        aria-label={`Remover opção ${String.fromCharCode(65 + idx)}`}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {opcoesTexto.length < 10 && (
+                <button
+                  type="button"
+                  onClick={adicionarOpcaoCampo}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-slate-400 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:border-[#0C0C0D] hover:text-slate-950"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Adicionar Opção {String.fromCharCode(65 + opcoesTexto.length)}
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="lg:col-span-9">
             <label
               htmlFor="pauta-descricao"
@@ -203,7 +415,11 @@ export function AdminPautasSection({
               type="text"
               value={descricao}
               onChange={(e) => setDescricao(e.target.value)}
-              placeholder="Ex.: SIM aprova a proposta apresentada pela administradora; NÃO rejeita a proposta."
+              placeholder={
+                tipoVotacao === 'SIM_NAO'
+                  ? 'Ex.: SIM aprova a proposta apresentada pela administradora; NÃO rejeita a proposta.'
+                  : 'Ex.: Escolha a empresa ou alternativa de sua preferência para o condomínio.'
+              }
               className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-800 focus:border-[#0C0C0D] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/40"
             />
           </div>
@@ -286,6 +502,14 @@ export function AdminPautasSection({
                       <span className="rounded-full border border-[#CCB285]/60 bg-[#CCB285]/15 px-3 py-0.5 text-xs font-bold text-slate-900">
                         Escopo: {metaEscopo.rotuloCurto} ({metaEscopo.totalUnidades} aptos)
                       </span>
+
+                      {obterTipoVotacaoPauta(pauta) !== 'SIM_NAO' && (
+                        <span className="rounded-full border border-indigo-300 bg-indigo-50 px-3 py-0.5 text-xs font-extrabold text-indigo-900">
+                          {obterTipoVotacaoPauta(pauta) === 'MULTIPLA_UNICA'
+                            ? `Múltipla Escolha • 1 opção (${obterOpcoesPauta(pauta).length} alt.)`
+                            : `Múltipla Escolha • até ${pauta.max_escolhas ?? obterOpcoesPauta(pauta).length} opções`}
+                        </span>
+                      )}
                     </div>
 
                     <h3 className="text-base font-extrabold text-slate-900 sm:text-lg">
@@ -394,12 +618,96 @@ export function AdminPautasSection({
                   </div>
                 )}
 
-                {/* Mini-Placar ao Vivo (SIM, NÃO e NÃO VOTARAM/ABSTENÇÃO + Destaque do Vencedor) */}
+                {/* Mini-Placar ao Vivo (SIM/NÃO ou Múltipla Escolha + Destaque do Vencedor) */}
                 {(() => {
                   const mostrarVencedor = encerrada || (aberta && estadoTimer.esgotado);
-                  const simVenceu = mostrarVencedor && placar.vencedor === 'SIM';
-                  const naoVenceu = mostrarVencedor && placar.vencedor === 'NAO';
+                  const isMultiplaPauta = placar.tipoVotacao !== 'SIM_NAO';
+                  const simVenceu = !isMultiplaPauta && mostrarVencedor && placar.vencedor === 'SIM';
+                  const naoVenceu = !isMultiplaPauta && mostrarVencedor && placar.vencedor === 'NAO';
                   const empatou = mostrarVencedor && placar.vencedor === 'EMPATE';
+                  const vencedorasMultipla = placar.opcoes.filter((o) => o.ehVencedora);
+
+                  if (isMultiplaPauta) {
+                    return (
+                      <div className="mt-4 space-y-2.5">
+                        {mostrarVencedor && placar.totalVotosRegistrados > 0 && (
+                          <div
+                            className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border-2 px-4 py-2 text-xs font-extrabold uppercase tracking-wider ${
+                              empatou
+                                ? 'border-amber-600 bg-amber-400 text-slate-950'
+                                : 'border-[#CCB285] bg-[#0C0C0D] text-white'
+                            }`}
+                          >
+                            <span>
+                              {empatou
+                                ? `EMPATE TÉCNICO: ${vencedorasMultipla
+                                    .map((o) => `${o.sigla} — ${o.label}`)
+                                    .join(' × ')}`
+                                : `★ MAIS VOTADA: ${vencedorasMultipla
+                                    .map((o) => `${o.sigla} — ${o.label}`)
+                                    .join(', ')}`}
+                            </span>
+                            <span className="font-mono">
+                              {placar.totalVotosRegistrados} votantes • Não votaram: {placar.naoVotaram}
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          {placar.opcoes.map((opt, idx) => {
+                            const paleta = obterPaletaOpcaoMultipla(idx);
+                            const venceu = mostrarVencedor && opt.ehVencedora;
+                            return (
+                              <div
+                                key={opt.id}
+                                className={`rounded-xl p-3 border transition ${
+                                  venceu
+                                    ? 'border-2 border-[#0C0C0D] bg-slate-900 text-white shadow-sm'
+                                    : 'border-slate-200 bg-slate-50 text-slate-900'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                                  <span className="flex items-center gap-2 min-w-0">
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-black shrink-0 ${
+                                        venceu
+                                          ? 'bg-[#CCB285] text-[#0C0C0D]'
+                                          : 'bg-[#0C0C0D] text-[#CCB285]'
+                                      }`}
+                                    >
+                                      {opt.sigla}
+                                    </span>
+                                    <span className="truncate">{opt.label}</span>
+                                  </span>
+                                  <span className="font-mono font-extrabold shrink-0 tabular-nums">
+                                    {opt.votos} ({opt.pctVotantes.toFixed(1)}%)
+                                  </span>
+                                </div>
+                                <div
+                                  className={`mt-2 h-2 w-full rounded-full overflow-hidden ${
+                                    venceu ? 'bg-white/15' : 'bg-slate-200'
+                                  }`}
+                                >
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-300 ${paleta.barClass}`}
+                                    style={{ width: `${Math.min(100, opt.pctVotantes)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2 flex items-center justify-between text-xs font-bold text-amber-950 tabular-nums">
+                          <span>NÃO VOTOU (ABSTENÇÃO / IMPARCIAL)</span>
+                          <span className="font-mono">
+                            {placar.naoVotaram} ({placar.pctNaoVotaram.toFixed(1)}%) •{' '}
+                            {placar.totalVotosRegistrados}/{placar.presentesAptos} presentes votaram
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div className="mt-4 space-y-2.5">
@@ -428,23 +736,16 @@ export function AdminPautasSection({
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 items-stretch">
                         <div
-                          className={`rounded-xl px-3.5 py-2.5 transition ${
+                          className={`rounded-xl px-3.5 py-2.5 flex flex-col justify-between min-h-[72px] transition ${
                             simVenceu
                               ? 'border-2 border-emerald-600 bg-emerald-100/90 ring-2 ring-emerald-500/30 shadow-sm'
                               : 'border border-emerald-200 bg-emerald-50/70'
                           }`}
                         >
                           <div className="flex items-center justify-between text-[11px] font-bold uppercase text-emerald-900">
-                            <span className="flex items-center gap-1.5">
-                              SIM
-                              {simVenceu && (
-                                <span className="rounded bg-emerald-700 px-1.5 py-0.5 text-[9px] font-black text-white">
-                                  ★ MAIOR QUANTIDADE
-                                </span>
-                              )}
-                            </span>
+                            <span>{simVenceu ? '★ SIM (MAIORIA)' : 'SIM'}</span>
                             <span className="font-mono">
                               {placar.pctSimValidos.toFixed(1)}% válidos
                             </span>
@@ -460,21 +761,14 @@ export function AdminPautasSection({
                         </div>
 
                         <div
-                          className={`rounded-xl px-3.5 py-2.5 transition ${
+                          className={`rounded-xl px-3.5 py-2.5 flex flex-col justify-between min-h-[72px] transition ${
                             naoVenceu
                               ? 'border-2 border-rose-600 bg-rose-100/90 ring-2 ring-rose-500/30 shadow-sm'
                               : 'border border-rose-200 bg-rose-50/70'
                           }`}
                         >
                           <div className="flex items-center justify-between text-[11px] font-bold uppercase text-rose-900">
-                            <span className="flex items-center gap-1.5">
-                              NÃO
-                              {naoVenceu && (
-                                <span className="rounded bg-rose-700 px-1.5 py-0.5 text-[9px] font-black text-white">
-                                  ★ MAIOR QUANTIDADE
-                                </span>
-                              )}
-                            </span>
+                            <span>{naoVenceu ? '★ NÃO (MAIORIA)' : 'NÃO'}</span>
                             <span className="font-mono">
                               {placar.pctNaoValidos.toFixed(1)}% válidos
                             </span>
@@ -489,7 +783,7 @@ export function AdminPautasSection({
                           </div>
                         </div>
 
-                        <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5">
+                        <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3.5 py-2.5 flex flex-col justify-between min-h-[72px]">
                           <div className="flex items-center justify-between text-[11px] font-bold uppercase text-amber-900">
                             <span>NÃO VOTOU (ABSTENÇÃO)</span>
                             <span className="font-mono">{placar.pctNaoVotaram.toFixed(1)}%</span>

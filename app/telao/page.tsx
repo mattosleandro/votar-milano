@@ -19,10 +19,9 @@ import {
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
 import {
-  calcularDensidadeTelao,
+  CLASSES_GRID_BLOCOS_PADRAO,
   DadosBlocoTelao,
   ItemUnidadeBlocoTelao,
-  obterClassesGridBlocos,
   TelaoBlocoCard,
   TelaoCelulaUnidade,
 } from '@/components/telao/TelaoBlocoCard';
@@ -37,6 +36,9 @@ import {
   chaveUnidade,
   obterInfoBloco,
   obterMetadadosEscopo,
+  obterOpcoesPauta,
+  obterPaletaOpcaoMultipla,
+  obterTipoVotacaoPauta,
   TODOS_APARTAMENTOS,
   unidadePertenceAoEscopo,
 } from '@/lib/condominio';
@@ -44,8 +46,8 @@ import { APP_PUBLIC_URL } from '@/lib/supabase';
 import {
   FaseCondominio,
   ModuloCondominio,
-  OpcaoVoto,
   PresencaPublica,
+  VotoUnidade,
 } from '@/lib/types';
 
 type AbaTelao = 'PRESENTES_POR_BLOCO' | 'TODOS_OS_BLOCOS' | 'PLACAR_CONSOLIDADO';
@@ -202,13 +204,16 @@ export default function PaginaTelao() {
     return mapa;
   }, [presencas]);
 
+  const tipoVotacaoFoco = obterTipoVotacaoPauta(pautaExibida);
+  const opcoesPautaFoco = useMemo(() => obterOpcoesPauta(pautaExibida), [pautaExibida]);
+
   const mapaVotosPauta = useMemo(() => {
-    const mapa = new Map<string, OpcaoVoto>();
+    const mapa = new Map<string, VotoUnidade>();
     if (!pautaExibida) return mapa;
     const rodadaAtiva = pautaExibida.rodada ?? 1;
     for (const v of votos) {
       if (v.pauta_id === pautaExibida.id && (v.rodada ?? 1) === rodadaAtiva) {
-        mapa.set(chaveUnidade(v.bloco, v.apartamento), v.voto);
+        mapa.set(chaveUnidade(v.bloco, v.apartamento), v);
       }
     }
     return mapa;
@@ -265,12 +270,13 @@ export default function PaginaTelao() {
 
       let votosSim = 0;
       let votosNao = 0;
+      let votosMultipla = 0;
       let procuracoes = 0;
 
       for (const apto of apartamentosFiltrados) {
         const ch = chaveUnidade(bloco, apto);
         const pr = mapaPresencas.get(ch);
-        const voto = mapaVotosPauta.get(ch);
+        const regVoto = mapaVotosPauta.get(ch);
         const presente = Boolean(pr);
 
         const item: ItemUnidadeBlocoTelao = {
@@ -280,7 +286,8 @@ export default function PaginaTelao() {
           onlineConectado: Boolean(pr?.online_conectado),
           isConstrutora: Boolean(pr?.is_construtora),
           comProcuracao: Boolean(pr?.com_procuracao),
-          voto,
+          voto: regVoto?.voto,
+          escolhas: regVoto?.escolhas_json,
         };
 
         itensTodos.push(item);
@@ -288,13 +295,16 @@ export default function PaginaTelao() {
         if (presente) {
           itensPresentes.push(item);
           if (item.comProcuracao) procuracoes += 1;
-          if (voto === 'SIM') votosSim += 1;
-          else if (voto === 'NAO') votosNao += 1;
+          if (regVoto?.voto === 'SIM') votosSim += 1;
+          else if (regVoto?.voto === 'NAO') votosNao += 1;
+          else if (regVoto?.voto === 'MULTIPLA') votosMultipla += 1;
         }
       }
 
       const presentesCount = itensPresentes.length;
-      const aguardandoVoto = Math.max(0, presentesCount - votosSim - votosNao);
+      const totalVotaramBloco =
+        tipoVotacaoFoco === 'SIM_NAO' ? votosSim + votosNao : votosMultipla;
+      const aguardandoVoto = Math.max(0, presentesCount - totalVotaramBloco);
       const baseComum = {
         bloco,
         fase: info.fase,
@@ -303,6 +313,7 @@ export default function PaginaTelao() {
         presentesCount,
         votosSim,
         votosNao,
+        votosMultipla,
         aguardandoVoto,
         procuracoes,
       };
@@ -317,7 +328,7 @@ export default function PaginaTelao() {
       blocosTodosDados: todos,
       blocosPresentesDados: apenasPresentes,
     };
-  }, [apartamentosFiltrados, blocosFiltrados, mapaPresencas, mapaVotosPauta]);
+  }, [apartamentosFiltrados, blocosFiltrados, mapaPresencas, mapaVotosPauta, tipoVotacaoFoco]);
 
   const dominioLegivel = useMemo(() => {
     try {
@@ -326,26 +337,6 @@ export default function PaginaTelao() {
       return 'votar.portalmilano.com';
     }
   }, []);
-
-  const densidadePresentes = useMemo(
-    () => calcularDensidadeTelao(blocosPresentesDados.length),
-    [blocosPresentesDados.length]
-  );
-
-  const densidadeTodos = useMemo(
-    () => calcularDensidadeTelao(blocosTodosDados.length),
-    [blocosTodosDados.length]
-  );
-
-  const classesGridPresentes = useMemo(
-    () => obterClassesGridBlocos(densidadePresentes, painelMaximizado),
-    [densidadePresentes, painelMaximizado]
-  );
-
-  const classesGridTodos = useMemo(
-    () => obterClassesGridBlocos(densidadeTodos, painelMaximizado),
-    [densidadeTodos, painelMaximizado]
-  );
 
   const mostrarVencedor = pautaExibida?.status === 'encerrada' || timerEsgotado;
 
@@ -586,18 +577,32 @@ export default function PaginaTelao() {
                 {placar && mostrarVencedor && placar.totalVotosRegistrados > 0 ? (
                   <span
                     className={`inline-flex items-center gap-1.5 px-3 py-0.5 rounded-md text-xs font-black uppercase tracking-wider shadow-md border ${
-                      placar.vencedor === 'SIM'
-                        ? 'bg-emerald-500 text-slate-950 border-emerald-200 animate-pulse'
-                        : placar.vencedor === 'NAO'
-                          ? 'bg-rose-500 text-white border-rose-200 animate-pulse'
-                          : 'bg-amber-400 text-slate-950 border-amber-200'
+                      placar.tipoVotacao !== 'SIM_NAO'
+                        ? placar.vencedor === 'EMPATE'
+                          ? 'bg-amber-400 text-slate-950 border-amber-200'
+                          : 'bg-milano-gold text-[#0C0C0D] border-milano-gold-light animate-pulse'
+                        : placar.vencedor === 'SIM'
+                          ? 'bg-emerald-500 text-slate-950 border-emerald-200 animate-pulse'
+                          : placar.vencedor === 'NAO'
+                            ? 'bg-rose-500 text-white border-rose-200 animate-pulse'
+                            : 'bg-amber-400 text-slate-950 border-amber-200'
                     }`}
                   >
-                    {placar.vencedor === 'SIM'
-                      ? `★ VENCEDOR: MAIORIA SIM (${placar.sim} × ${placar.nao})`
-                      : placar.vencedor === 'NAO'
-                        ? `★ VENCEDOR: MAIORIA NÃO (${placar.nao} × ${placar.sim})`
-                        : `EMPATE (${placar.sim} × ${placar.nao})`}
+                    {placar.tipoVotacao !== 'SIM_NAO'
+                      ? placar.vencedor === 'EMPATE'
+                        ? `EMPATE: ${placar.opcoes
+                            .filter((o) => o.ehVencedora)
+                            .map((o) => `${o.sigla} (${o.votos})`)
+                            .join(' × ')}`
+                        : `★ MAIS VOTADA: ${placar.opcoes
+                            .filter((o) => o.ehVencedora)
+                            .map((o) => `${o.sigla} — ${o.label} (${o.votos})`)
+                            .join(', ')}`
+                      : placar.vencedor === 'SIM'
+                        ? `★ VENCEDOR: MAIORIA SIM (${placar.sim} × ${placar.nao})`
+                        : placar.vencedor === 'NAO'
+                          ? `★ VENCEDOR: MAIORIA NÃO (${placar.nao} × ${placar.sim})`
+                          : `EMPATE (${placar.sim} × ${placar.nao})`}
                   </span>
                 ) : null}
               </div>
@@ -625,85 +630,108 @@ export default function PaginaTelao() {
               onEsgotadoChange={setTimerEsgotado}
             />
 
-            {/* Direita: Placar Compacto de Alto Contraste */}
+            {/* Direita: Placar Compacto Padronizado (mesma altura em todos os cards) */}
             {placar ? (
-              (() => {
-                const simVenceu = mostrarVencedor && placar.vencedor === 'SIM';
-                const naoVenceu = mostrarVencedor && placar.vencedor === 'NAO';
-
-                return (
-                  <div className="grid grid-cols-3 gap-2 tabular-nums w-full sm:w-auto shrink-0">
-                    <div
-                      className={`rounded-xl px-3 py-1 min-w-[98px] 2xl:min-w-[130px] transition-all ${
-                        simVenceu
-                          ? 'bg-emerald-900/90 border-2 border-milano-gold ring-2 ring-emerald-400/50 shadow-lg shadow-emerald-950'
-                          : 'bg-emerald-950/70 border border-emerald-500/50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1 text-[11px] font-black text-emerald-300">
-                        <span className="flex items-center gap-1">
-                          SIM
-                          {simVenceu ? (
-                            <span className="px-1.5 py-0.5 rounded bg-milano-gold text-[#0C0C0D] text-[9px] font-black uppercase">
-                              ★ MAIORIA
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="font-mono">{placar.pctSimValidos.toFixed(0)}%</span>
-                      </div>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
-                          {placar.sim}
+              placar.tipoVotacao !== 'SIM_NAO' ? (
+                <div className="flex flex-wrap items-stretch gap-1.5 tabular-nums w-full sm:w-auto shrink-0">
+                  {placar.opcoes.slice(0, 4).map((opt, idx) => {
+                    const paleta = obterPaletaOpcaoMultipla(idx);
+                    const venceu = mostrarVencedor && opt.ehVencedora;
+                    return (
+                      <div
+                        key={opt.id}
+                        title={`${opt.sigla}: ${opt.label}`}
+                        className={`rounded-xl px-2.5 py-1.5 min-w-[82px] min-h-[58px] flex flex-col justify-between transition-all ${
+                          venceu
+                            ? 'bg-slate-800 border-2 border-milano-gold ring-2 ring-milano-gold/40'
+                            : `border ${paleta.pillDark}`
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 text-[10px] font-black">
+                          <span>OPÇÃO {opt.sigla}</span>
+                          <span className="font-mono">{opt.pctVotantes.toFixed(0)}%</span>
+                        </div>
+                        <p className="text-lg 2xl:text-xl font-black font-mono text-white leading-none">
+                          {opt.votos}
                         </p>
-                        <span className="text-[10px] font-semibold text-emerald-300/80 font-mono">
-                          {placar.pctSim.toFixed(0)}% pres.
-                        </span>
                       </div>
+                    );
+                  })}
+                  <div className="rounded-xl bg-amber-950/60 border border-amber-400/45 px-2.5 py-1.5 min-w-[88px] min-h-[58px] flex flex-col justify-between">
+                    <div className="flex items-center justify-between gap-1 text-[10px] font-black text-amber-300">
+                      <span>ABST.</span>
+                      <span className="font-mono">{placar.pctNaoVotaram.toFixed(0)}%</span>
                     </div>
-
-                    <div
-                      className={`rounded-xl px-3 py-1 min-w-[98px] 2xl:min-w-[130px] transition-all ${
-                        naoVenceu
-                          ? 'bg-rose-900/90 border-2 border-milano-gold ring-2 ring-rose-400/50 shadow-lg shadow-rose-950'
-                          : 'bg-rose-950/70 border border-rose-500/50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1 text-[11px] font-black text-rose-300">
-                        <span className="flex items-center gap-1">
-                          NÃO
-                          {naoVenceu ? (
-                            <span className="px-1.5 py-0.5 rounded bg-milano-gold text-[#0C0C0D] text-[9px] font-black uppercase">
-                              ★ MAIORIA
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="font-mono">{placar.pctNaoValidos.toFixed(0)}%</span>
-                      </div>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-tight">
-                          {placar.nao}
-                        </p>
-                        <span className="text-[10px] font-semibold text-rose-300/80 font-mono">
-                          {placar.pctNao.toFixed(0)}% pres.
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl bg-amber-950/60 border border-amber-400/45 px-3 py-1 min-w-[104px] 2xl:min-w-[136px]">
-                      <div className="flex items-center justify-between gap-1 text-[11px] font-black text-amber-300">
-                        <span>NÃO VOTOU</span>
-                        <span className="font-mono">{placar.pctNaoVotaram.toFixed(0)}%</span>
-                      </div>
-                      <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-amber-100 leading-tight">
-                          {placar.naoVotaram}
-                        </p>
-                        <span className="text-[10px] font-semibold text-amber-300/80">Abst.</span>
-                      </div>
-                    </div>
+                    <p className="text-lg 2xl:text-xl font-black font-mono text-amber-100 leading-none">
+                      {placar.naoVotaram}
+                    </p>
                   </div>
-                );
-              })()
+                </div>
+              ) : (
+                (() => {
+                  const simVenceu = mostrarVencedor && placar.vencedor === 'SIM';
+                  const naoVenceu = mostrarVencedor && placar.vencedor === 'NAO';
+
+                  return (
+                    <div className="grid grid-cols-3 gap-2 tabular-nums items-stretch w-full sm:w-auto shrink-0">
+                      <div
+                        className={`rounded-xl px-3 py-1.5 min-w-[104px] 2xl:min-w-[132px] min-h-[58px] flex flex-col justify-between transition-all ${
+                          simVenceu
+                            ? 'bg-emerald-900/90 border-2 border-milano-gold ring-2 ring-emerald-400/40 shadow-lg'
+                            : 'bg-emerald-950/70 border border-emerald-500/50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 text-[11px] font-black text-emerald-300">
+                          <span>{simVenceu ? '★ SIM' : 'SIM'}</span>
+                          <span className="font-mono">{placar.pctSimValidos.toFixed(0)}%</span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-none">
+                            {placar.sim}
+                          </p>
+                          <span className="text-[10px] font-semibold text-emerald-300/80 font-mono">
+                            {placar.pctSim.toFixed(0)}% pres.
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        className={`rounded-xl px-3 py-1.5 min-w-[104px] 2xl:min-w-[132px] min-h-[58px] flex flex-col justify-between transition-all ${
+                          naoVenceu
+                            ? 'bg-rose-900/90 border-2 border-milano-gold ring-2 ring-rose-400/40 shadow-lg'
+                            : 'bg-rose-950/70 border border-rose-500/50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-1 text-[11px] font-black text-rose-300">
+                          <span>{naoVenceu ? '★ NÃO' : 'NÃO'}</span>
+                          <span className="font-mono">{placar.pctNaoValidos.toFixed(0)}%</span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-white leading-none">
+                            {placar.nao}
+                          </p>
+                          <span className="text-[10px] font-semibold text-rose-300/80 font-mono">
+                            {placar.pctNao.toFixed(0)}% pres.
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl bg-amber-950/60 border border-amber-400/45 px-3 py-1.5 min-w-[104px] 2xl:min-w-[132px] min-h-[58px] flex flex-col justify-between">
+                        <div className="flex items-center justify-between gap-1 text-[11px] font-black text-amber-300">
+                          <span>NÃO VOTOU</span>
+                          <span className="font-mono">{placar.pctNaoVotaram.toFixed(0)}%</span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-amber-100 leading-none">
+                            {placar.naoVotaram}
+                          </p>
+                          <span className="text-[10px] font-semibold text-amber-300/80">Abst.</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )
             ) : null}
           </div>
         </section>
@@ -755,14 +783,34 @@ export default function PaginaTelao() {
 
             {/* Legenda de Cores Semânticas + Botão Tela Inteira */}
             <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-bold text-slate-300">
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 border border-emerald-300" />
-                SIM
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-sm bg-rose-600 border border-rose-300" />
-                NÃO
-              </span>
+              {tipoVotacaoFoco === 'SIM_NAO' ? (
+                <>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 border border-emerald-300" />
+                    SIM
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-sm bg-rose-600 border border-rose-300" />
+                    NÃO
+                  </span>
+                </>
+              ) : (
+                opcoesPautaFoco.slice(0, 6).map((opt, idx) => {
+                  const paleta = obterPaletaOpcaoMultipla(idx);
+                  return (
+                    <span
+                      key={opt.id}
+                      title={`${opt.sigla}: ${opt.label}`}
+                      className="inline-flex items-center gap-1 max-w-[140px]"
+                    >
+                      <span className={`w-2.5 h-2.5 rounded-sm shrink-0 ${paleta.barClass}`} />
+                      <span className="truncate">
+                        {opt.sigla}: {opt.label}
+                      </span>
+                    </span>
+                  );
+                })
+              )}
               <span className="inline-flex items-center gap-1">
                 <span className="w-2.5 h-2.5 rounded-sm bg-sky-600 border border-sky-300" />
                 CONECTADO
@@ -931,13 +979,14 @@ export default function PaginaTelao() {
                   )}
                 </div>
               ) : (
-                <div className={`grid ${classesGridPresentes} items-stretch content-start`}>
+                <div className={`grid ${CLASSES_GRID_BLOCOS_PADRAO} items-stretch content-start`}>
                   {blocosPresentesDados.map((dados) => (
                     <TelaoBlocoCard
                       key={dados.bloco}
                       dados={dados}
-                      densidade={densidadePresentes}
                       exibirResumoVotos={Boolean(pautaExibida)}
+                      tipoVotacao={tipoVotacaoFoco}
+                      opcoesPauta={opcoesPautaFoco}
                     />
                   ))}
                 </div>
@@ -946,7 +995,7 @@ export default function PaginaTelao() {
           )}
 
           {/* ===================================================================
-              ABA 2: GRADE INTEGRAL COMPLETA POR BLOCO (Mesmo Card & Padrão da Aba 1)
+              ABA 2: GRADE INTEGRAL COMPLETA POR BLOCO (Mesmo Card & Tamanho da Aba 1)
              =================================================================== */}
           {abaAtiva === 'TODOS_OS_BLOCOS' && (
             <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 custom-scrollbar">
@@ -965,13 +1014,14 @@ export default function PaginaTelao() {
                   </button>
                 </div>
               ) : (
-                <div className={`grid ${classesGridTodos} items-stretch content-start`}>
+                <div className={`grid ${CLASSES_GRID_BLOCOS_PADRAO} items-stretch content-start`}>
                   {blocosTodosDados.map((dados) => (
                     <TelaoBlocoCard
                       key={dados.bloco}
                       dados={dados}
-                      densidade={densidadeTodos}
                       exibirResumoVotos={Boolean(pautaExibida)}
+                      tipoVotacao={tipoVotacaoFoco}
+                      opcoesPauta={opcoesPautaFoco}
                     />
                   ))}
                 </div>
@@ -985,90 +1035,150 @@ export default function PaginaTelao() {
           {abaAtiva === 'PLACAR_CONSOLIDADO' && (
             <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar">
               {placar ? (
-                <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3 shrink-0 tabular-nums">
-                  {/* Barra Proporcional Gigante */}
-                  <div className="h-6 w-full rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex">
-                    {placar.sim > 0 && (
-                      <div
-                        className="bg-emerald-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-slate-950"
-                        style={{ width: `${placar.pctSim}%` }}
-                      >
-                        {placar.pctSim >= 10 ? `SIM ${placar.pctSim.toFixed(0)}%` : ''}
-                      </div>
-                    )}
-                    {placar.nao > 0 && (
-                      <div
-                        className="bg-rose-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-white"
-                        style={{ width: `${placar.pctNao}%` }}
-                      >
-                        {placar.pctNao >= 10 ? `NÃO ${placar.pctNao.toFixed(0)}%` : ''}
-                      </div>
-                    )}
-                    {placar.naoVotaram > 0 && (
-                      <div
-                        className="bg-amber-500/40 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-amber-100"
-                        style={{ width: `${placar.pctNaoVotaram}%` }}
-                      >
-                        {placar.pctNaoVotaram >= 12
-                          ? `ABST. ${placar.pctNaoVotaram.toFixed(0)}%`
-                          : ''}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div
-                      className={`rounded-2xl p-4 border-2 ${
-                        mostrarVencedor && placar.vencedor === 'SIM'
-                          ? 'bg-emerald-900/70 border-milano-gold ring-2 ring-emerald-400/50'
-                          : 'bg-emerald-950/60 border-emerald-500/50'
-                      }`}
-                    >
-                      <p className="text-xs font-black uppercase tracking-wider text-emerald-300">
-                        Votos SIM (Aprovar)
-                      </p>
-                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
-                        {placar.sim}
-                      </p>
-                      <p className="mt-1 text-xs font-mono font-bold text-emerald-200">
-                        {placar.pctSimValidos.toFixed(1)}% válidos • {placar.pctSim.toFixed(1)}%
-                        dos presentes
-                      </p>
+                placar.tipoVotacao !== 'SIM_NAO' ? (
+                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3 shrink-0 tabular-nums">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {placar.opcoes.map((opt, idx) => {
+                        const paleta = obterPaletaOpcaoMultipla(idx);
+                        const venceu = mostrarVencedor && opt.ehVencedora;
+                        return (
+                          <div
+                            key={opt.id}
+                            className={`rounded-2xl p-4 border-2 flex flex-col justify-between gap-2 ${
+                              venceu
+                                ? 'bg-slate-800 border-milano-gold ring-2 ring-milano-gold/40'
+                                : 'bg-slate-950/70 border-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span
+                                  className={`px-2.5 py-1 rounded-lg font-mono text-sm font-black shrink-0 ${
+                                    venceu
+                                      ? 'bg-milano-gold text-[#0C0C0D]'
+                                      : `${paleta.barClass} text-white`
+                                  }`}
+                                >
+                                  {opt.sigla}
+                                </span>
+                                <p className="text-sm font-extrabold text-white leading-snug">
+                                  {opt.label}
+                                </p>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <p className="text-3xl font-black font-mono text-white leading-none">
+                                  {opt.votos}
+                                </p>
+                                <p className="text-[11px] font-mono font-bold text-slate-300 mt-0.5">
+                                  {opt.pctVotantes.toFixed(1)}%
+                                </p>
+                              </div>
+                            </div>
+                            <div className="h-2.5 w-full rounded-full bg-slate-900 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all duration-500 ${paleta.barClass}`}
+                                style={{ width: `${Math.min(100, opt.pctVotantes)}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
 
-                    <div
-                      className={`rounded-2xl p-4 border-2 ${
-                        mostrarVencedor && placar.vencedor === 'NAO'
-                          ? 'bg-rose-900/70 border-milano-gold ring-2 ring-rose-400/50'
-                          : 'bg-rose-950/60 border-rose-500/50'
-                      }`}
-                    >
-                      <p className="text-xs font-black uppercase tracking-wider text-rose-300">
-                        Votos NÃO (Rejeitar)
-                      </p>
-                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
-                        {placar.nao}
-                      </p>
-                      <p className="mt-1 text-xs font-mono font-bold text-rose-200">
-                        {placar.pctNaoValidos.toFixed(1)}% válidos • {placar.pctNao.toFixed(1)}%
-                        dos presentes
-                      </p>
-                    </div>
-
-                    <div className="rounded-2xl p-4 border-2 bg-amber-950/50 border-amber-400/45">
-                      <p className="text-xs font-black uppercase tracking-wider text-amber-300">
-                        Não Votaram (Abstenção)
-                      </p>
-                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-amber-100">
-                        {placar.naoVotaram}
-                      </p>
-                      <p className="mt-1 text-xs font-mono font-bold text-amber-200">
-                        {placar.pctNaoVotaram.toFixed(1)}% de {placar.presentesAptos} presentes
-                        aptos
-                      </p>
+                    <div className="rounded-xl bg-amber-950/50 border border-amber-400/45 px-4 py-2.5 flex items-center justify-between text-xs font-bold text-amber-200">
+                      <span>Não Votaram (Abstenção / Imparcialidade)</span>
+                      <span className="font-mono text-sm font-black text-amber-100">
+                        {placar.naoVotaram} ({placar.pctNaoVotaram.toFixed(1)}%) •{' '}
+                        {placar.totalVotosRegistrados}/{placar.presentesAptos} votaram
+                      </span>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3 shrink-0 tabular-nums">
+                    {/* Barra Proporcional Gigante */}
+                    <div className="h-6 w-full rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex">
+                      {placar.sim > 0 && (
+                        <div
+                          className="bg-emerald-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-slate-950"
+                          style={{ width: `${placar.pctSim}%` }}
+                        >
+                          {placar.pctSim >= 10 ? `SIM ${placar.pctSim.toFixed(0)}%` : ''}
+                        </div>
+                      )}
+                      {placar.nao > 0 && (
+                        <div
+                          className="bg-rose-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-white"
+                          style={{ width: `${placar.pctNao}%` }}
+                        >
+                          {placar.pctNao >= 10 ? `NÃO ${placar.pctNao.toFixed(0)}%` : ''}
+                        </div>
+                      )}
+                      {placar.naoVotaram > 0 && (
+                        <div
+                          className="bg-amber-500/40 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-amber-100"
+                          style={{ width: `${placar.pctNaoVotaram}%` }}
+                        >
+                          {placar.pctNaoVotaram >= 12
+                            ? `ABST. ${placar.pctNaoVotaram.toFixed(0)}%`
+                            : ''}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-stretch">
+                      <div
+                        className={`rounded-2xl p-4 border-2 flex flex-col justify-between ${
+                          mostrarVencedor && placar.vencedor === 'SIM'
+                            ? 'bg-emerald-900/70 border-milano-gold ring-2 ring-emerald-400/50'
+                            : 'bg-emerald-950/60 border-emerald-500/50'
+                        }`}
+                      >
+                        <p className="text-xs font-black uppercase tracking-wider text-emerald-300">
+                          Votos SIM (Aprovar)
+                        </p>
+                        <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
+                          {placar.sim}
+                        </p>
+                        <p className="mt-1 text-xs font-mono font-bold text-emerald-200">
+                          {placar.pctSimValidos.toFixed(1)}% válidos • {placar.pctSim.toFixed(1)}%
+                          dos presentes
+                        </p>
+                      </div>
+
+                      <div
+                        className={`rounded-2xl p-4 border-2 flex flex-col justify-between ${
+                          mostrarVencedor && placar.vencedor === 'NAO'
+                            ? 'bg-rose-900/70 border-milano-gold ring-2 ring-rose-400/50'
+                            : 'bg-rose-950/60 border-rose-500/50'
+                        }`}
+                      >
+                        <p className="text-xs font-black uppercase tracking-wider text-rose-300">
+                          Votos NÃO (Rejeitar)
+                        </p>
+                        <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
+                          {placar.nao}
+                        </p>
+                        <p className="mt-1 text-xs font-mono font-bold text-rose-200">
+                          {placar.pctNaoValidos.toFixed(1)}% válidos • {placar.pctNao.toFixed(1)}%
+                          dos presentes
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl p-4 border-2 bg-amber-950/50 border-amber-400/45 flex flex-col justify-between">
+                        <p className="text-xs font-black uppercase tracking-wider text-amber-300">
+                          Não Votaram (Abstenção)
+                        </p>
+                        <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-amber-100">
+                          {placar.naoVotaram}
+                        </p>
+                        <p className="mt-1 text-xs font-mono font-bold text-amber-200">
+                          {placar.pctNaoVotaram.toFixed(1)}% de {placar.presentesAptos} presentes
+                          aptos
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )
               ) : null}
 
               <div className="space-y-2">
@@ -1078,21 +1188,26 @@ export default function PaginaTelao() {
                 {unidadesPresentesFiltradas.length === 0 ? (
                   <p className="text-xs text-slate-500">Nenhuma unidade presente neste filtro.</p>
                 ) : (
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,122px),1fr))] gap-2">
-                    {unidadesPresentesFiltradas.map((u) => (
-                      <TelaoCelulaUnidade
-                        key={u.id}
-                        bloco={u.bloco}
-                        apartamento={u.apartamento}
-                        presente={true}
-                        onlineConectado={Boolean(u.online_conectado)}
-                        isConstrutora={u.is_construtora}
-                        comProcuracao={Boolean(u.com_procuracao)}
-                        voto={mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento))}
-                        densidade="lista"
-                        mostrarBlocoPrefix={true}
-                      />
-                    ))}
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,134px),1fr))] gap-2">
+                    {unidadesPresentesFiltradas.map((u) => {
+                      const regVoto = mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento));
+                      return (
+                        <TelaoCelulaUnidade
+                          key={u.id}
+                          bloco={u.bloco}
+                          apartamento={u.apartamento}
+                          presente={true}
+                          onlineConectado={Boolean(u.online_conectado)}
+                          isConstrutora={u.is_construtora}
+                          comProcuracao={Boolean(u.com_procuracao)}
+                          voto={regVoto?.voto}
+                          escolhas={regVoto?.escolhas_json}
+                          opcoesPauta={opcoesPautaFoco}
+                          modoLista={true}
+                          mostrarBlocoPrefix={true}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </div>

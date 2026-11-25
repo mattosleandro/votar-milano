@@ -1,11 +1,14 @@
 import {
   AssembleiaConfig,
+  ContagemOpcaoPlacar,
   EscopoVotacao,
   FaseCondominio,
   ModuloCondominio,
+  OpcaoPauta,
   PautaAssembleia,
   PlacarPublicoRpc,
   PresencaPublica,
+  TipoVotacaoPauta,
   VotoUnidade,
 } from './types';
 
@@ -446,20 +449,30 @@ export function calcularQuorumEscopo(
   return calcularQuorumPorContagem(escopo, presentesNoEscopo, config, presentesConstrutoraNoEscopo);
 }
 
-export type ResultadoVencedorPauta = 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS';
+export type ResultadoVencedorPauta = 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS' | 'MULTIPLA';
+
+export interface PlacarOpcaoItem extends ContagemOpcaoPlacar {
+  /** % sobre o total de unidades votantes na pauta */
+  pctVotantes: number;
+  /** % sobre o total de presentes aptos no escopo */
+  pctPresentes: number;
+  /** Se esta opção está entre a(s) mais votada(s) */
+  ehVencedora: boolean;
+}
 
 export interface PlacarPauta {
   escopo: EscopoVotacao;
+  tipoVotacao: TipoVotacaoPauta;
   presentesAptos: number;
   sim: number;
   nao: number;
-  /** Unidades presentes no escopo que não votaram SIM nem NÃO (Abstenção / Imparcial) */
+  /** Unidades presentes no escopo que não votaram (Abstenção / Imparcial) */
   naoVotaram: number;
   /** Alias para compatibilidade com relatórios: igual a naoVotaram */
   abstencao: number;
   /** Alias para compatibilidade: igual a naoVotaram */
   aguardando: number;
-  /** Total de votos deliberativos computados (SIM + NÃO) */
+  /** Total de unidades que registraram voto deliberativo */
   totalVotosRegistrados: number;
   /** % sobre o total de presentes aptos no escopo */
   pctSim: number;
@@ -470,18 +483,155 @@ export interface PlacarPauta {
   /** % entre os votos deliberativos válidos (SIM vs NÃO) */
   pctSimValidos: number;
   pctNaoValidos: number;
-  /** Opção com maior quantidade de votos (SIM, NAO, EMPATE ou SEM_VOTOS) */
+  /** Opção com maior quantidade de votos (SIM, NAO, MULTIPLA, EMPATE ou SEM_VOTOS) */
   vencedor: ResultadoVencedorPauta;
-  /** Diferença absoluta entre SIM e NÃO */
+  /** Diferença absoluta entre SIM e NÃO (ou entre 1º e 2º lugar na múltipla escolha) */
   diferencaVotos: number;
+  /** Contagem detalhada por opção (para pautas MULTIPLA_UNICA e MULTIPLA_VARIAS) */
+  opcoes: PlacarOpcaoItem[];
+  /** IDs da(s) opção(ões) vencedora(s) em múltipla escolha */
+  vencedoresIds: string[];
+}
+
+export interface PaletaOpcaoMultipla {
+  bgTelaoCell: string;
+  barClass: string;
+  pillDark: string;
+  pillLight: string;
+  cardLight: string;
+  cardSelected: string;
+}
+
+const PALETA_OPCOES_MULTIPLA: readonly PaletaOpcaoMultipla[] = [
+  {
+    bgTelaoCell: 'bg-indigo-600 border-indigo-300/90 text-white shadow-sm shadow-indigo-950/80',
+    barClass: 'bg-indigo-500',
+    pillDark: 'bg-indigo-500/25 border-indigo-400/60 text-indigo-200',
+    pillLight: 'bg-indigo-100 border-indigo-300 text-indigo-900',
+    cardLight: 'bg-indigo-50/80 border-indigo-200 text-indigo-950',
+    cardSelected: 'bg-indigo-600 border-indigo-800 text-white ring-4 ring-indigo-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-teal-600 border-teal-300/90 text-white shadow-sm shadow-teal-950/80',
+    barClass: 'bg-teal-500',
+    pillDark: 'bg-teal-500/25 border-teal-400/60 text-teal-200',
+    pillLight: 'bg-teal-100 border-teal-300 text-teal-900',
+    cardLight: 'bg-teal-50/80 border-teal-200 text-teal-950',
+    cardSelected: 'bg-teal-600 border-teal-800 text-white ring-4 ring-teal-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-amber-600 border-amber-300/90 text-white shadow-sm shadow-amber-950/80',
+    barClass: 'bg-amber-500',
+    pillDark: 'bg-amber-500/25 border-amber-400/60 text-amber-200',
+    pillLight: 'bg-amber-100 border-amber-300 text-amber-950',
+    cardLight: 'bg-amber-50/80 border-amber-200 text-amber-950',
+    cardSelected: 'bg-amber-600 border-amber-800 text-white ring-4 ring-amber-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-fuchsia-600 border-fuchsia-300/90 text-white shadow-sm shadow-fuchsia-950/80',
+    barClass: 'bg-fuchsia-500',
+    pillDark: 'bg-fuchsia-500/25 border-fuchsia-400/60 text-fuchsia-200',
+    pillLight: 'bg-fuchsia-100 border-fuchsia-300 text-fuchsia-900',
+    cardLight: 'bg-fuchsia-50/80 border-fuchsia-200 text-fuchsia-950',
+    cardSelected: 'bg-fuchsia-600 border-fuchsia-800 text-white ring-4 ring-fuchsia-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-cyan-600 border-cyan-300/90 text-white shadow-sm shadow-cyan-950/80',
+    barClass: 'bg-cyan-500',
+    pillDark: 'bg-cyan-500/25 border-cyan-400/60 text-cyan-200',
+    pillLight: 'bg-cyan-100 border-cyan-300 text-cyan-900',
+    cardLight: 'bg-cyan-50/80 border-cyan-200 text-cyan-950',
+    cardSelected: 'bg-cyan-600 border-cyan-800 text-white ring-4 ring-cyan-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-orange-600 border-orange-300/90 text-white shadow-sm shadow-orange-950/80',
+    barClass: 'bg-orange-500',
+    pillDark: 'bg-orange-500/25 border-orange-400/60 text-orange-200',
+    pillLight: 'bg-orange-100 border-orange-300 text-orange-900',
+    cardLight: 'bg-orange-50/80 border-orange-200 text-orange-950',
+    cardSelected: 'bg-orange-600 border-orange-800 text-white ring-4 ring-orange-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-lime-600 border-lime-300/90 text-white shadow-sm shadow-lime-950/80',
+    barClass: 'bg-lime-500',
+    pillDark: 'bg-lime-500/25 border-lime-400/60 text-lime-200',
+    pillLight: 'bg-lime-100 border-lime-300 text-lime-900',
+    cardLight: 'bg-lime-50/80 border-lime-200 text-lime-950',
+    cardSelected: 'bg-lime-600 border-lime-800 text-white ring-4 ring-lime-500/25',
+  },
+  {
+    bgTelaoCell: 'bg-pink-600 border-pink-300/90 text-white shadow-sm shadow-pink-950/80',
+    barClass: 'bg-pink-500',
+    pillDark: 'bg-pink-500/25 border-pink-400/60 text-pink-200',
+    pillLight: 'bg-pink-100 border-pink-300 text-pink-900',
+    cardLight: 'bg-pink-50/80 border-pink-200 text-pink-950',
+    cardSelected: 'bg-pink-600 border-pink-800 text-white ring-4 ring-pink-500/25',
+  },
+];
+
+export function obterPaletaOpcaoMultipla(index: number): PaletaOpcaoMultipla {
+  return PALETA_OPCOES_MULTIPLA[Math.abs(index) % PALETA_OPCOES_MULTIPLA.length];
+}
+
+export function obterTipoVotacaoPauta(
+  pauta?: Pick<PautaAssembleia, 'tipo_votacao'> | null
+): TipoVotacaoPauta {
+  if (pauta?.tipo_votacao === 'MULTIPLA_UNICA') return 'MULTIPLA_UNICA';
+  if (pauta?.tipo_votacao === 'MULTIPLA_VARIAS') return 'MULTIPLA_VARIAS';
+  return 'SIM_NAO';
+}
+
+export function obterOpcoesPauta(
+  pauta?: Pick<PautaAssembleia, 'opcoes_json'> | null
+): OpcaoPauta[] {
+  if (!pauta || !Array.isArray(pauta.opcoes_json)) return [];
+  return pauta.opcoes_json
+    .filter((o) => o && typeof o.id === 'string' && typeof o.label === 'string')
+    .map((o, idx) => ({
+      id: o.id,
+      sigla: o.sigla || String.fromCharCode(65 + idx),
+      label: o.label,
+    }));
+}
+
+export function formatarVotoLegivel(
+  voto: Pick<VotoUnidade, 'voto' | 'escolhas_json'>,
+  pauta?: Pick<PautaAssembleia, 'tipo_votacao' | 'opcoes_json'> | null
+): string {
+  if (voto.voto === 'SIM') return 'SIM';
+  if (voto.voto === 'NAO') return 'NÃO';
+  if (voto.voto === 'ABSTENCAO') return 'ABSTENÇÃO';
+
+  const escolhas = Array.isArray(voto.escolhas_json) ? voto.escolhas_json : [];
+  if (escolhas.length === 0) return 'MÚLTIPLA';
+
+  const opcoes = obterOpcoesPauta(pauta);
+  const mapa = new Map(opcoes.map((o) => [o.id, o]));
+  return escolhas
+    .map((id) => {
+      const opt = mapa.get(id);
+      return opt ? `${opt.sigla}: ${opt.label}` : id;
+    })
+    .join(' | ');
+}
+
+export function formatarSiglasVoto(
+  escolhas: readonly string[] | undefined,
+  pauta?: Pick<PautaAssembleia, 'opcoes_json'> | null
+): string {
+  if (!escolhas || escolhas.length === 0) return '';
+  const opcoes = obterOpcoesPauta(pauta);
+  const mapa = new Map(opcoes.map((o) => [o.id, o.sigla]));
+  return escolhas.map((id) => mapa.get(id) ?? id).join('·');
 }
 
 export function calcularPlacarPauta(
-  pauta: Pick<PautaAssembleia, 'id' | 'escopo' | 'rodada'>,
+  pauta: Pick<PautaAssembleia, 'id' | 'escopo' | 'rodada' | 'tipo_votacao' | 'opcoes_json'>,
   presencas: readonly PresencaPublica[],
   votos: readonly VotoUnidade[]
 ): PlacarPauta {
   const rodadaAtiva = pauta.rodada ?? 1;
+  const tipoVotacao = obterTipoVotacaoPauta(pauta);
   const presentesMap = new Map<string, PresencaPublica>();
   for (const p of presencas) {
     if (unidadePertenceAoEscopo(p, pauta.escopo)) {
@@ -491,6 +641,10 @@ export function calcularPlacarPauta(
 
   let sim = 0;
   let nao = 0;
+  let totalUnidadesMultipla = 0;
+  const opcoesBase = obterOpcoesPauta(pauta);
+  const mapaContagemOpcoes = new Map<string, number>();
+  for (const o of opcoesBase) mapaContagemOpcoes.set(o.id, 0);
 
   for (const v of votos) {
     if (v.pauta_id !== pauta.id) continue;
@@ -498,28 +652,68 @@ export function calcularPlacarPauta(
     const info = obterInfoBloco(v.bloco);
     if (!unidadePertenceAoEscopo(info, pauta.escopo)) continue;
 
-    if (v.voto === 'SIM') sim += 1;
-    else if (v.voto === 'NAO') nao += 1;
+    if (tipoVotacao === 'SIM_NAO') {
+      if (v.voto === 'SIM') sim += 1;
+      else if (v.voto === 'NAO') nao += 1;
+    } else if (v.voto === 'MULTIPLA') {
+      const escolhas = Array.isArray(v.escolhas_json) ? v.escolhas_json : [];
+      if (escolhas.length > 0) {
+        totalUnidadesMultipla += 1;
+        for (const optId of escolhas) {
+          if (mapaContagemOpcoes.has(optId)) {
+            mapaContagemOpcoes.set(optId, (mapaContagemOpcoes.get(optId) ?? 0) + 1);
+          }
+        }
+      }
+    }
   }
 
-  const totalVotosRegistrados = sim + nao;
+  const totalVotosRegistrados = tipoVotacao === 'SIM_NAO' ? sim + nao : totalUnidadesMultipla;
   const presentesAptos = Math.max(presentesMap.size, totalVotosRegistrados);
   const naoVotaram = Math.max(presentesAptos - totalVotosRegistrados, 0);
 
   const divisorPresentes = presentesAptos > 0 ? presentesAptos : 1;
   const divisorValidos = totalVotosRegistrados > 0 ? totalVotosRegistrados : 1;
+  const pctNaoVotaram = presentesAptos > 0 ? (naoVotaram / divisorPresentes) * 100 : 0;
 
   let vencedor: ResultadoVencedorPauta = 'SEM_VOTOS';
-  if (totalVotosRegistrados > 0) {
-    if (sim > nao) vencedor = 'SIM';
-    else if (nao > sim) vencedor = 'NAO';
-    else vencedor = 'EMPATE';
-  }
+  let diferencaVotos = Math.abs(sim - nao);
+  let vencedoresIds: string[] = [];
+  let opcoes: PlacarOpcaoItem[] = [];
 
-  const pctNaoVotaram = presentesAptos > 0 ? (naoVotaram / divisorPresentes) * 100 : 0;
+  if (tipoVotacao === 'SIM_NAO') {
+    if (totalVotosRegistrados > 0) {
+      if (sim > nao) vencedor = 'SIM';
+      else if (nao > sim) vencedor = 'NAO';
+      else vencedor = 'EMPATE';
+    }
+  } else {
+    const contagens = opcoesBase.map((o) => ({
+      ...o,
+      votos: mapaContagemOpcoes.get(o.id) ?? 0,
+    }));
+    const maxVotos = contagens.reduce((acc, item) => Math.max(acc, item.votos), 0);
+    if (maxVotos > 0) {
+      vencedoresIds = contagens.filter((c) => c.votos === maxVotos).map((c) => c.id);
+      vencedor = vencedoresIds.length > 1 ? 'EMPATE' : 'MULTIPLA';
+      const ordenados = [...contagens].sort((a, b) => b.votos - a.votos);
+      diferencaVotos =
+        ordenados.length >= 2 ? ordenados[0].votos - ordenados[1].votos : ordenados[0]?.votos ?? 0;
+    } else {
+      diferencaVotos = 0;
+    }
+
+    opcoes = contagens.map((c) => ({
+      ...c,
+      pctVotantes: totalVotosRegistrados > 0 ? (c.votos / divisorValidos) * 100 : 0,
+      pctPresentes: presentesAptos > 0 ? (c.votos / divisorPresentes) * 100 : 0,
+      ehVencedora: maxVotos > 0 && vencedoresIds.includes(c.id),
+    }));
+  }
 
   return {
     escopo: pauta.escopo,
+    tipoVotacao,
     presentesAptos,
     sim,
     nao,
@@ -535,11 +729,17 @@ export function calcularPlacarPauta(
     pctSimValidos: totalVotosRegistrados > 0 ? (sim / divisorValidos) * 100 : 0,
     pctNaoValidos: totalVotosRegistrados > 0 ? (nao / divisorValidos) * 100 : 0,
     vencedor,
-    diferencaVotos: Math.abs(sim - nao),
+    diferencaVotos,
+    opcoes,
+    vencedoresIds,
   };
 }
 
 export function converterPlacarRpcParaPlacarPauta(placar: PlacarPublicoRpc): PlacarPauta {
+  const tipoVotacao: TipoVotacaoPauta =
+    placar.tipo_votacao === 'MULTIPLA_UNICA' || placar.tipo_votacao === 'MULTIPLA_VARIAS'
+      ? placar.tipo_votacao
+      : 'SIM_NAO';
   const sim = Math.max(0, Number(placar.sim || 0));
   const nao = Math.max(0, Number(placar.nao || 0));
   const totalVotosRegistrados = Math.max(0, Number(placar.total_votos ?? sim + nao));
@@ -550,8 +750,32 @@ export function converterPlacarRpcParaPlacarPauta(placar: PlacarPublicoRpc): Pla
   const divisorValidos = totalVotosRegistrados > 0 ? totalVotosRegistrados : 1;
   const pctNaoVotaram = presentesAptos > 0 ? (naoVotaram / divisorPresentes) * 100 : 0;
 
+  const vencedoresIds = Array.isArray(placar.vencedores_ids) ? placar.vencedores_ids : [];
+  const opcoesRaw = Array.isArray(placar.opcoes_contagem) ? placar.opcoes_contagem : [];
+  const opcoes: PlacarOpcaoItem[] = opcoesRaw.map((o) => {
+    const v = Math.max(0, Number(o.votos || 0));
+    return {
+      id: o.id,
+      sigla: o.sigla,
+      label: o.label,
+      votos: v,
+      pctVotantes: totalVotosRegistrados > 0 ? (v / divisorValidos) * 100 : 0,
+      pctPresentes: presentesAptos > 0 ? (v / divisorPresentes) * 100 : 0,
+      ehVencedora: v > 0 && vencedoresIds.includes(o.id),
+    };
+  });
+
+  const ordenados = [...opcoes].sort((a, b) => b.votos - a.votos);
+  const diferencaVotos =
+    tipoVotacao === 'SIM_NAO'
+      ? Math.abs(sim - nao)
+      : ordenados.length >= 2
+        ? ordenados[0].votos - ordenados[1].votos
+        : ordenados[0]?.votos ?? 0;
+
   return {
     escopo: placar.escopo,
+    tipoVotacao,
     presentesAptos,
     sim,
     nao,
@@ -567,6 +791,8 @@ export function converterPlacarRpcParaPlacarPauta(placar: PlacarPublicoRpc): Pla
     pctSimValidos: totalVotosRegistrados > 0 ? (sim / divisorValidos) * 100 : 0,
     pctNaoValidos: totalVotosRegistrados > 0 ? (nao / divisorValidos) * 100 : 0,
     vencedor: placar.vencedor,
-    diferencaVotos: Math.abs(sim - nao),
+    diferencaVotos,
+    opcoes,
+    vencedoresIds,
   };
 }

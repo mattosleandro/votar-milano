@@ -15,6 +15,8 @@ import {
   formatarUnidadeCompacta,
   obterInfoBloco,
   obterMetadadosEscopo,
+  obterOpcoesPauta,
+  obterTipoVotacaoPauta,
   PAVIMENTOS_APARTAMENTOS,
   TODOS_APARTAMENTOS,
   TODOS_OS_BLOCOS,
@@ -42,7 +44,8 @@ interface AdminConstrutoraSectionProps {
   onVotarEmLoteConstrutora: (
     pautaId: string,
     escopoPauta: EscopoVotacao,
-    voto: OpcaoVoto
+    voto: OpcaoVoto,
+    escolhas?: string[]
   ) => Promise<ResultadoOperacaoAdmin>;
   onNotificar: (res: ResultadoOperacaoAdmin) => void;
 }
@@ -59,8 +62,12 @@ export function AdminConstrutoraSection({
 }: AdminConstrutoraSectionProps) {
   const [blocoSelecionado, setBlocoSelecionado] = useState<number>(1);
   const [aptosMarcados, setAptosMarcados] = useState<number[]>([]);
+  const [escolhasLoteConstrutora, setEscolhasLoteConstrutora] = useState<string[]>([]);
   const [processando, setProcessando] = useState(false);
   const [confirmarLimparTodas, setConfirmarLimparTodas] = useState(false);
+
+  const tipoVotacaoAberta = obterTipoVotacaoPauta(pautaAberta);
+  const opcoesPautaAberta = useMemo(() => obterOpcoesPauta(pautaAberta), [pautaAberta]);
 
   const infoBloco = useMemo(() => obterInfoBloco(blocoSelecionado), [blocoSelecionado]);
 
@@ -160,16 +167,26 @@ export function AdminConstrutoraSection({
     onNotificar(res);
   };
 
-  const handleVotarLote = async (opcao: OpcaoVoto) => {
+  const handleVotarLote = async (opcao: OpcaoVoto, escolhas?: string[]) => {
     if (!pautaAberta || processando) return;
     setProcessando(true);
     const res = await onVotarEmLoteConstrutora(
       pautaAberta.id,
       pautaAberta.escopo,
-      opcao
+      opcao,
+      escolhas
     );
     setProcessando(false);
     onNotificar(res);
+  };
+
+  const toggleEscolhaLote = (optId: string) => {
+    const maxEsc = Math.max(1, pautaAberta?.max_escolhas ?? opcoesPautaAberta.length);
+    setEscolhasLoteConstrutora((atual) => {
+      if (atual.includes(optId)) return atual.filter((id) => id !== optId);
+      if (atual.length >= maxEsc) return atual;
+      return [...atual, optId];
+    });
   };
 
   return (
@@ -208,29 +225,86 @@ export function AdminConstrutoraSection({
           )}
         </div>
 
-        {pautaAberta && (
-          <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <button
-              type="button"
-              disabled={processando || unidadesAptasNaPautaAberta.length === 0}
-              onClick={() => void handleVotarLote('SIM')}
-              className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-white shadow transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Check className="h-4 w-4" />
-              Votar SIM ({unidadesAptasNaPautaAberta.length} aptos)
-            </button>
+        {pautaAberta &&
+          (tipoVotacaoAberta === 'SIM_NAO' ? (
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={processando || unidadesAptasNaPautaAberta.length === 0}
+                onClick={() => void handleVotarLote('SIM')}
+                className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-white shadow transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Check className="h-4 w-4" />
+                Votar SIM ({unidadesAptasNaPautaAberta.length} aptos)
+              </button>
 
-            <button
-              type="button"
-              disabled={processando || unidadesAptasNaPautaAberta.length === 0}
-              onClick={() => void handleVotarLote('NAO')}
-              className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-white shadow transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <XCircle className="h-4 w-4" />
-              Votar NÃO ({unidadesAptasNaPautaAberta.length} aptos)
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                disabled={processando || unidadesAptasNaPautaAberta.length === 0}
+                onClick={() => void handleVotarLote('NAO')}
+                className="flex items-center justify-center gap-2 rounded-xl bg-rose-600 px-4 py-3.5 text-sm font-extrabold uppercase tracking-wide text-white shadow transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <XCircle className="h-4 w-4" />
+                Votar NÃO ({unidadesAptasNaPautaAberta.length} aptos)
+              </button>
+            </div>
+          ) : tipoVotacaoAberta === 'MULTIPLA_UNICA' ? (
+            <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              {opcoesPautaAberta.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  disabled={processando || unidadesAptasNaPautaAberta.length === 0}
+                  onClick={() => void handleVotarLote('MULTIPLA', [opt.id])}
+                  className="flex items-center justify-between gap-2 rounded-xl border border-[#CCB285]/40 bg-white/10 px-4 py-3 text-left text-xs font-extrabold text-white transition hover:bg-[#CCB285] hover:text-[#0C0C0D] disabled:opacity-40"
+                >
+                  <span className="truncate">
+                    [{opt.sigla}] {opt.label}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px]">
+                    ({unidadesAptasNaPautaAberta.length} aptos)
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-5 space-y-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {opcoesPautaAberta.map((opt) => {
+                  const marcada = escolhasLoteConstrutora.includes(opt.id);
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => toggleEscolhaLote(opt.id)}
+                      className={`flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-left text-xs font-bold transition ${
+                        marcada
+                          ? 'border-[#CCB285] bg-[#CCB285] text-[#0C0C0D]'
+                          : 'border-white/20 bg-white/5 text-white hover:border-[#CCB285]/60'
+                      }`}
+                    >
+                      <span className="font-mono font-black">[{opt.sigla}]</span>
+                      <span className="truncate">{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                disabled={
+                  processando ||
+                  unidadesAptasNaPautaAberta.length === 0 ||
+                  escolhasLoteConstrutora.length === 0
+                }
+                onClick={() => void handleVotarLote('MULTIPLA', escolhasLoteConstrutora)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-xs font-extrabold uppercase tracking-wide text-white shadow transition hover:bg-emerald-500 disabled:opacity-40"
+              >
+                <Check className="h-4 w-4" />
+                Registrar {escolhasLoteConstrutora.length} Opção(ões) para{' '}
+                {unidadesAptasNaPautaAberta.length} aptos
+              </button>
+            </div>
+          ))}
       </section>
 
       {/* 2. Seletor por Bloco e Apartamento (100% Opcional) */}

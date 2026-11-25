@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Building2,
+  Check,
   CheckCircle2,
   Clock,
   Eye,
@@ -19,6 +20,7 @@ import {
   Timer,
   UserCheck,
   Users,
+  Vibrate,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -30,10 +32,15 @@ import {
   converterPlacarRpcParaPlacarPauta,
   formatarBloco,
   formatarSegundosMMSS,
+  formatarSiglasVoto,
   formatarUnidadeCompleta,
   formatarUnidadeTelaoCompacta,
+  formatarVotoLegivel,
   obterEstadoRelogioCampoGrande,
   obterMetadadosEscopo,
+  obterOpcoesPauta,
+  obterPaletaOpcaoMultipla,
+  obterTipoVotacaoPauta,
   unidadePertenceAoEscopo,
 } from '@/lib/condominio';
 import { coletarTelemetriaDispositivo } from '@/lib/deviceTelemetry';
@@ -42,8 +49,25 @@ import {
   ModuloCondominio,
   SessaoMoradorLocal,
   UnidadeAutorizadaJwt,
+  VotoUnidade,
 } from '@/lib/types';
 import { aplicarMascaraCpf, validarCpf } from '@/lib/validators';
+
+function vibrarDispositivo(padrao: number | number[]): void {
+  if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+  try {
+    navigator.vibrate(padrao);
+  } catch {
+    // Alguns navegadores bloqueiam vibração sem gesto prévio
+  }
+}
+
+function listasIguais(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sA = [...a].sort();
+  const sB = [...b].sort();
+  return sA.every((v, i) => v === sB[i]);
+}
 
 const STORAGE_KEY_SESSAO = 'votar_milano_sessao_v3_jwt';
 const LEGACY_STORAGE_KEY = 'votar_milano_sessao_v2';
@@ -108,11 +132,15 @@ export default function PaginaMorador() {
   const [aguardandoPortariaMsg, setAguardandoPortariaMsg] = useState<string | null>(null);
   const [bloqueioInadimplenteMsg, setBloqueioInadimplenteMsg] = useState<string | null>(null);
 
-  // Estado de votação
-  const [enviandoVoto, setEnviandoVoto] = useState<'SIM' | 'NAO' | null>(null);
+  // Estado de votação (SIM/NÃO e Múltipla Escolha)
+  const [enviandoVoto, setEnviandoVoto] = useState<string | null>(null);
+  const [selecaoMultipla, setSelecaoMultipla] = useState<string[]>([]);
   const [erroVoto, setErroVoto] = useState<string | null>(null);
   const [feedbackVoto, setFeedbackVoto] = useState<string | null>(null);
   const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
+
+  const chaveInicioVotacaoRef = useRef<string | null>(null);
+  const ultimoSegundoVibradoRef = useRef<number | null>(null);
 
   useEffect(() => {
     const id = window.setInterval(() => setAgoraMs(Date.now() + serverOffsetMs), 1000);
@@ -189,11 +217,12 @@ export default function PaginaMorador() {
     }
   }, [config.assembleia_ativa, config.convocacao_ativa]);
 
-  // Limpa feedback visual ao trocar de pauta aberta
+  // Limpa feedback visual e seleção múltipla ao trocar de pauta aberta ou rodada
   useEffect(() => {
     setFeedbackVoto(null);
     setErroVoto(null);
-  }, [pautaAberta?.id]);
+    setSelecaoMultipla([]);
+  }, [pautaAberta?.id, pautaAberta?.rodada]);
 
   const votacaoAtivaNoMomento =
     config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA';
@@ -203,20 +232,73 @@ export default function PaginaMorador() {
     [config, agoraMs]
   );
 
+  const duracaoTimerTotal = Math.max(10, config.timer_duration_seconds || 120);
+
   const segundosRestantesTimer = useMemo(() => {
-    const duracao = config.timer_duration_seconds || 120;
     if (!config.timer_running || !config.timer_started_at) return null;
     const inicio = Date.parse(config.timer_started_at);
     if (Number.isNaN(inicio)) return null;
-    return Math.max(0, duracao - Math.floor((agoraMs - inicio) / 1000));
+    return Math.max(0, duracaoTimerTotal - Math.floor((agoraMs - inicio) / 1000));
   }, [
-    config.timer_duration_seconds,
+    duracaoTimerTotal,
     config.timer_running,
     config.timer_started_at,
     agoraMs,
   ]);
 
   const tempoVotacaoEsgotado = segundosRestantesTimer !== null && segundosRestantesTimer <= 0;
+  const nosUltimos10Segundos =
+    segundosRestantesTimer !== null && segundosRestantesTimer > 0 && segundosRestantesTimer <= 10;
+  const percentualTempoRestante =
+    segundosRestantesTimer !== null
+      ? Math.min(100, Math.max(0, (segundosRestantesTimer / duracaoTimerTotal) * 100))
+      : 100;
+
+  // Vibração ao iniciar a votação (abertura de pauta / nova rodada / início do cronômetro)
+  useEffect(() => {
+    if (!sessao || !pautaAberta) {
+      chaveInicioVotacaoRef.current = null;
+      return;
+    }
+    const chaveAtual = `${pautaAberta.id}:${pautaAberta.rodada ?? 1}:${config.timer_started_at ?? ''}`;
+    if (chaveInicioVotacaoRef.current === null) {
+      chaveInicioVotacaoRef.current = chaveAtual;
+      // Dispara vibração de abertura se o timer acabou de iniciar recentemente (< 12s)
+      if (config.timer_running && config.timer_started_at) {
+        const inicioMs = Date.parse(config.timer_started_at);
+        if (!Number.isNaN(inicioMs) && agoraMs - inicioMs < 12000) {
+          vibrarDispositivo([220, 90, 220]);
+        }
+      }
+      return;
+    }
+    if (chaveInicioVotacaoRef.current !== chaveAtual) {
+      chaveInicioVotacaoRef.current = chaveAtual;
+      vibrarDispositivo([220, 90, 220]);
+    }
+  }, [agoraMs, config.timer_running, config.timer_started_at, pautaAberta, sessao]);
+
+  // Vibração nos 10 segundos finais do cronômetro (10s -> 0s)
+  useEffect(() => {
+    if (!sessao || !pautaAberta || !config.timer_running || segundosRestantesTimer === null) {
+      ultimoSegundoVibradoRef.current = null;
+      return;
+    }
+    if (segundosRestantesTimer > 10) {
+      ultimoSegundoVibradoRef.current = null;
+      return;
+    }
+    if (ultimoSegundoVibradoRef.current === segundosRestantesTimer) return;
+    ultimoSegundoVibradoRef.current = segundosRestantesTimer;
+
+    if (segundosRestantesTimer === 10) {
+      vibrarDispositivo([180, 80, 180]);
+    } else if (segundosRestantesTimer > 0) {
+      vibrarDispositivo(75);
+    } else {
+      vibrarDispositivo(320);
+    }
+  }, [config.timer_running, pautaAberta, segundosRestantesTimer, sessao]);
 
   // Unidade ativa atualmente selecionada pelo morador/procurador na sessão
   const unidadeAtivaSessao: UnidadeAutorizadaJwt | null = useMemo(() => {
@@ -451,19 +533,22 @@ export default function PaginaMorador() {
 
   // Mapa O(1) dos próprios votos do morador/procurador na pauta em foco
   const pautaEmFoco = pautaAberta ?? ultimaPautaEncerrada;
+  const tipoVotacaoAberta = obterTipoVotacaoPauta(pautaAberta);
+  const opcoesPautaAberta = useMemo(() => obterOpcoesPauta(pautaAberta), [pautaAberta]);
 
   const mapaMeusVotosPautaFoco = useMemo(() => {
-    const mapa = new Map<string, 'SIM' | 'NAO'>();
+    const mapa = new Map<string, VotoUnidade>();
     if (!pautaEmFoco) return mapa;
+    const rodadaFoco = pautaEmFoco.rodada ?? 1;
     for (const v of meusVotos) {
-      if (v.pauta_id === pautaEmFoco.id && (v.voto === 'SIM' || v.voto === 'NAO')) {
-        mapa.set(chaveUnidade(v.bloco, v.apartamento), v.voto);
+      if (v.pauta_id === pautaEmFoco.id && (v.rodada ?? 1) === rodadaFoco) {
+        mapa.set(chaveUnidade(v.bloco, v.apartamento), v);
       }
     }
     return mapa;
   }, [meusVotos, pautaEmFoco]);
 
-  const meuVotoAtual = useMemo(() => {
+  const meuVotoRegistroAtual = useMemo(() => {
     if (!unidadeAtivaSessao || !pautaAberta) return null;
     return (
       mapaMeusVotosPautaFoco.get(
@@ -472,9 +557,29 @@ export default function PaginaMorador() {
     );
   }, [mapaMeusVotosPautaFoco, pautaAberta, unidadeAtivaSessao]);
 
+  const meuVotoAtual = meuVotoRegistroAtual?.voto ?? null;
+  const minhasEscolhasConfirmadas = useMemo(
+    () =>
+      Array.isArray(meuVotoRegistroAtual?.escolhas_json)
+        ? meuVotoRegistroAtual.escolhas_json
+        : [],
+    [meuVotoRegistroAtual]
+  );
+
+  // Sincroniza rascunho de checkboxes (MULTIPLA_VARIAS) com o voto salvo ao trocar unidade/pauta
+  useEffect(() => {
+    if (tipoVotacaoAberta === 'MULTIPLA_VARIAS') {
+      setSelecaoMultipla(minhasEscolhasConfirmadas);
+    }
+  }, [
+    minhasEscolhasConfirmadas,
+    tipoVotacaoAberta,
+    unidadeAtivaSessao?.apartamento,
+    unidadeAtivaSessao?.bloco,
+  ]);
+
   const handleVotar = async (opcao: 'SIM' | 'NAO') => {
     if (!sessao || !unidadeAtivaSessao || !pautaAberta || enviandoVoto) return;
-    // Bloqueia re-submissão redundante do mesmo voto já registrado
     if (meuVotoAtual === opcao) return;
 
     setEnviandoVoto(opcao);
@@ -494,13 +599,57 @@ export default function PaginaMorador() {
       return;
     }
 
+    vibrarDispositivo(45);
     const rotuloVoto = opcao === 'SIM' ? 'SIM' : 'NÃO';
-    setFeedbackVoto(
-      `Voto [${rotuloVoto}] registrado para ${formatarUnidadeTelaoCompacta(
-        unidadeAtivaSessao.bloco,
-        unidadeAtivaSessao.apartamento
-      )}!`
-    );
+    setFeedbackVoto(`Voto [${rotuloVoto}] registrado com sucesso!`);
+  };
+
+  const handleVotarMultipla = async (escolhas: string[]) => {
+    if (!sessao || !unidadeAtivaSessao || !pautaAberta || enviandoVoto) return;
+    if (escolhas.length === 0) {
+      setErroVoto('Selecione ao menos uma opção antes de confirmar.');
+      return;
+    }
+    if (meuVotoAtual === 'MULTIPLA' && listasIguais(minhasEscolhasConfirmadas, escolhas)) {
+      return;
+    }
+
+    setEnviandoVoto(escolhas.join(','));
+    setErroVoto(null);
+
+    const res = await registrarVotoUnidade({
+      jwtToken: sessao.token,
+      pautaId: pautaAberta.id,
+      bloco: unidadeAtivaSessao.bloco,
+      apartamento: unidadeAtivaSessao.apartamento,
+      voto: 'MULTIPLA',
+      escolhas,
+    });
+
+    setEnviandoVoto(null);
+    if (!res.ok) {
+      setErroVoto(res.erro ?? 'Não foi possível registrar seu voto.');
+      return;
+    }
+
+    vibrarDispositivo(45);
+    const rotulo = formatarVotoLegivel({ voto: 'MULTIPLA', escolhas_json: escolhas }, pautaAberta);
+    setFeedbackVoto(`Voto [${rotulo}] registrado com sucesso!`);
+  };
+
+  const alternarOpcaoMultiplaVarias = (optId: string) => {
+    const maxEsc = Math.max(1, pautaAberta?.max_escolhas ?? opcoesPautaAberta.length);
+    setErroVoto(null);
+    setSelecaoMultipla((atual) => {
+      if (atual.includes(optId)) {
+        return atual.filter((id) => id !== optId);
+      }
+      if (atual.length >= maxEsc) {
+        setErroVoto(`Esta pauta permite selecionar no máximo ${maxEsc} opção(ões).`);
+        return atual;
+      }
+      return [...atual, optId];
+    });
   };
 
   // Cálculo de Quórum e Placar (100% derivado dos agregados públicos sanitizados — Zero PII!)
@@ -541,10 +690,25 @@ export default function PaginaMorador() {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-slate-900 border border-slate-700 text-milano-gold-light tabular-nums">
-              <Clock className="w-3 h-3 text-milano-gold" />
-              {estadoRelogio.horaCampoGrande}
-            </span>
+            {pautaAberta && segundosRestantesTimer !== null && config.timer_running ? (
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono font-black border tabular-nums ${
+                  nosUltimos10Segundos || tempoVotacaoEsgotado
+                    ? 'bg-rose-600 text-white border-rose-300 animate-pulse'
+                    : segundosRestantesTimer <= 30
+                      ? 'bg-amber-500 text-slate-950 border-amber-200'
+                      : 'bg-milano-gold text-[#0C0C0D] border-milano-gold-light'
+                }`}
+              >
+                <Timer className="w-3.5 h-3.5" />
+                {formatarSegundosMMSS(segundosRestantesTimer)}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-slate-900 border border-slate-700 text-milano-gold-light tabular-nums">
+                <Clock className="w-3 h-3 text-milano-gold" />
+                {estadoRelogio.horaCampoGrande}
+              </span>
+            )}
 
             <span
               title={
@@ -629,43 +793,24 @@ export default function PaginaMorador() {
             </span>
           </div>
 
-          {/* Contador Regressivo do Telão (quando ativo) */}
-          {segundosRestantesTimer !== null && config.timer_running && (
-            <div className="rounded-xl bg-milano-gold/15 border border-milano-gold/40 px-3.5 py-2 flex items-center justify-between">
-              <span className="text-xs font-bold text-milano-gold-light flex items-center gap-1.5">
-                <Timer className="w-4 h-4 text-milano-gold animate-pulse" />
-                Tempo Restante de Votação:
-              </span>
-              <span
-                className={`font-mono text-lg font-black tabular-nums ${
-                  segundosRestantesTimer <= 30
-                    ? 'text-rose-400 animate-pulse'
-                    : 'text-white'
-                }`}
-              >
-                {formatarSegundosMMSS(segundosRestantesTimer)}
-              </span>
-            </div>
-          )}
-
-          <div className="grid grid-cols-3 gap-2 pt-1 text-center tabular-nums">
-            <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
-              <p className="text-[11px] text-slate-400 uppercase tracking-wider">
-                Presentes Aptos
+          <div className="grid grid-cols-3 gap-2 pt-1 text-center tabular-nums items-stretch">
+            <div className="rounded-xl bg-white/5 border border-white/10 p-2.5 flex flex-col justify-between min-h-[68px]">
+              <p className="text-[10px] sm:text-[11px] text-slate-400 uppercase tracking-wider leading-tight">
+                Presentes
               </p>
-              <p className="text-lg font-bold font-mono text-white">
+              <p className="text-base sm:text-lg font-bold font-mono text-white leading-none">
                 {resumoQuorum.presentesNoEscopo}
-                <span className="text-xs text-slate-400 font-normal">
+                <span className="text-[11px] text-slate-400 font-normal">
                   /{resumoQuorum.baseConvocadosAptos}
                 </span>
               </p>
             </div>
 
-            <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
-              <p className="text-[11px] text-slate-400 uppercase tracking-wider">
+            <div className="rounded-xl bg-white/5 border border-white/10 p-2.5 flex flex-col justify-between min-h-[68px]">
+              <p className="text-[10px] sm:text-[11px] text-slate-400 uppercase tracking-wider leading-tight">
                 {config.convocacao_ativa === 'PRIMEIRA' ? 'Mín. 1ª Conv.' : 'Quórum Atual'}
               </p>
-              <p className="text-lg font-bold font-mono text-milano-gold">
+              <p className="text-base sm:text-lg font-bold font-mono text-milano-gold leading-none">
                 {config.convocacao_ativa === 'PRIMEIRA'
                   ? `${resumoQuorum.minimoPrimeiraConvocacao} un.`
                   : `${resumoQuorum.percentualPresencaBase.toFixed(1)}%`}
@@ -673,15 +818,15 @@ export default function PaginaMorador() {
             </div>
 
             {/* Exibição Pública Obrigatória: APENAS Quantidade Total de Inadimplentes */}
-            <div className="rounded-xl bg-amber-950/40 border border-amber-500/30 p-2.5">
-              <p className="text-[11px] text-amber-300/90 uppercase tracking-wider">
+            <div className="rounded-xl bg-amber-950/40 border border-amber-500/30 p-2.5 flex flex-col justify-between min-h-[68px]">
+              <p className="text-[10px] sm:text-[11px] text-amber-300/90 uppercase tracking-wider leading-tight">
                 Inadimplentes
               </p>
               <p
-                className="text-lg font-bold font-mono text-amber-300"
+                className="text-base sm:text-lg font-bold font-mono text-amber-300 leading-none"
                 title="Quantidade total agregada de unidades sem direito a voto"
               >
-                {config.total_inadimplentes} <span className="text-xs font-normal">un.</span>
+                {config.total_inadimplentes} <span className="text-[11px] font-normal">un.</span>
               </p>
             </div>
           </div>
@@ -1106,20 +1251,24 @@ export default function PaginaMorador() {
                           {pautaAberta ? (
                             <span
                               className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
-                                votoDaUnidade === 'SIM'
+                                votoDaUnidade?.voto === 'SIM'
                                   ? 'bg-emerald-600 text-white'
-                                  : votoDaUnidade === 'NAO'
+                                  : votoDaUnidade?.voto === 'NAO'
                                     ? 'bg-rose-600 text-white'
-                                    : ativa
-                                      ? 'bg-white/15 text-amber-300'
-                                      : 'bg-amber-100 text-amber-900'
+                                    : votoDaUnidade?.voto === 'MULTIPLA'
+                                      ? 'bg-indigo-600 text-white'
+                                      : ativa
+                                        ? 'bg-white/15 text-amber-300'
+                                        : 'bg-amber-100 text-amber-900'
                               }`}
                             >
-                              {votoDaUnidade === 'SIM'
+                              {votoDaUnidade?.voto === 'SIM'
                                 ? 'SIM ✓'
-                                : votoDaUnidade === 'NAO'
+                                : votoDaUnidade?.voto === 'NAO'
                                   ? 'NÃO ✓'
-                                  : 'Pendente'}
+                                  : votoDaUnidade?.voto === 'MULTIPLA'
+                                    ? `${formatarSiglasVoto(votoDaUnidade.escolhas_json, pautaAberta) || 'VOTOU'} ✓`
+                                    : 'Pendente'}
                             </span>
                           ) : null}
                         </button>
@@ -1176,6 +1325,99 @@ export default function PaginaMorador() {
                       ) : null}
                     </div>
 
+                    {/* TIMER DE VOTAÇÃO EM ALTÍSSIMO DESTAQUE DENTRO DO CARD DA PAUTA */}
+                    {segundosRestantesTimer !== null && config.timer_running ? (
+                      <div
+                        className={`rounded-2xl p-3.5 border-2 transition-colors space-y-2 tabular-nums ${
+                          tempoVotacaoEsgotado
+                            ? 'bg-rose-950 border-rose-500 text-white'
+                            : nosUltimos10Segundos
+                              ? 'bg-rose-600 border-rose-800 text-white shadow-lg shadow-rose-500/30 animate-pulse'
+                              : segundosRestantesTimer <= 30
+                                ? 'bg-amber-50 border-amber-400 text-amber-950'
+                                : 'bg-[#0C0C0D] border-milano-gold/70 text-white shadow-md'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Timer
+                              className={`w-5 h-5 shrink-0 ${
+                                nosUltimos10Segundos || tempoVotacaoEsgotado
+                                  ? 'text-white'
+                                  : segundosRestantesTimer <= 30
+                                    ? 'text-amber-700'
+                                    : 'text-milano-gold'
+                              }`}
+                            />
+                            <div className="min-w-0">
+                              <p
+                                className={`text-[11px] font-black uppercase tracking-wider leading-tight ${
+                                  nosUltimos10Segundos || tempoVotacaoEsgotado
+                                    ? 'text-white'
+                                    : segundosRestantesTimer <= 30
+                                      ? 'text-amber-900'
+                                      : 'text-milano-gold-light'
+                                }`}
+                              >
+                                {tempoVotacaoEsgotado
+                                  ? 'Tempo Esgotado'
+                                  : nosUltimos10Segundos
+                                    ? 'Atenção: 10 Segundos Finais!'
+                                    : segundosRestantesTimer <= 30
+                                      ? 'Últimos Segundos para Votar'
+                                      : 'Tempo Restante de Votação'}
+                              </p>
+                              <p
+                                className={`text-[10px] font-medium flex items-center gap-1 ${
+                                  nosUltimos10Segundos || tempoVotacaoEsgotado
+                                    ? 'text-rose-100'
+                                    : segundosRestantesTimer <= 30
+                                      ? 'text-amber-800'
+                                      : 'text-slate-400'
+                                }`}
+                              >
+                                <Vibrate className="w-3 h-3 shrink-0" />
+                                Alerta vibratório ativo nos 10s finais
+                              </p>
+                            </div>
+                          </div>
+
+                          <span
+                            className={`font-mono text-2xl sm:text-3xl font-black leading-none shrink-0 ${
+                              segundosRestantesTimer <= 30 &&
+                              !nosUltimos10Segundos &&
+                              !tempoVotacaoEsgotado
+                                ? 'text-amber-950'
+                                : 'text-white'
+                            }`}
+                          >
+                            {formatarSegundosMMSS(segundosRestantesTimer)}
+                          </span>
+                        </div>
+
+                        <div
+                          className={`h-2 w-full rounded-full overflow-hidden ${
+                            segundosRestantesTimer <= 30 &&
+                            !nosUltimos10Segundos &&
+                            !tempoVotacaoEsgotado
+                              ? 'bg-amber-200'
+                              : 'bg-white/20'
+                          }`}
+                        >
+                          <div
+                            className={`h-full rounded-full transition-all duration-700 ${
+                              tempoVotacaoEsgotado || nosUltimos10Segundos
+                                ? 'bg-white'
+                                : segundosRestantesTimer <= 30
+                                  ? 'bg-amber-600'
+                                  : 'bg-milano-gold'
+                            }`}
+                            style={{ width: `${percentualTempoRestante}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+
                     {!aptoNaPauta ? (
                       <div className="rounded-xl bg-amber-50 border border-amber-300 p-4 text-xs text-amber-950 space-y-1">
                         <p className="font-bold text-sm flex items-center gap-1.5">
@@ -1203,67 +1445,239 @@ export default function PaginaMorador() {
                             </span>
                           </div>
                         ) : (
-                          <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                            Toque na sua opção de voto (unidade{' '}
-                            {formatarUnidadeTelaoCompacta(
-                              unidadeAtivaSessao.bloco,
-                              unidadeAtivaSessao.apartamento
-                            )}
-                            {' — '}quem não votar será contabilizado como Abstenção / Imparcial):
-                          </p>
+                          <div className="space-y-0.5">
+                            <p className="text-sm font-extrabold text-slate-900">
+                              {tipoVotacaoAberta === 'MULTIPLA_VARIAS'
+                                ? `Selecione até ${pautaAberta.max_escolhas ?? opcoesPautaAberta.length} opções e confirme seu voto`
+                                : 'Toque na opção do seu voto'}
+                            </p>
+                            <p className="text-xs font-medium text-slate-500">
+                              Quem não votar será contabilizado como abstenção / imparcialidade.
+                            </p>
+                          </div>
                         )}
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <button
-                            type="button"
-                            disabled={
-                              enviandoVoto !== null ||
-                              tempoVotacaoEsgotado ||
-                              meuVotoAtual === 'SIM'
-                            }
-                            onClick={() => void handleVotar('SIM')}
-                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:cursor-default ${
-                              meuVotoAtual === 'SIM'
-                                ? 'bg-emerald-600 text-white border-emerald-800 shadow-lg ring-4 ring-emerald-500/25'
-                                : 'bg-emerald-50/90 text-emerald-950 border-emerald-400 hover:bg-emerald-100 disabled:opacity-60'
-                            }`}
-                          >
-                            <span className="flex items-center gap-3">
-                              <ThumbsUp className="w-5 h-5" />
-                              {enviandoVoto === 'SIM' ? 'Registrando...' : 'SIM (APROVAR)'}
-                            </span>
-                            {meuVotoAtual === 'SIM' ? (
-                              <span className="text-xs uppercase px-2.5 py-1 rounded-full bg-white/20 font-bold">
-                                Confirmado ✓
+                        {tipoVotacaoAberta === 'SIM_NAO' ? (
+                          <div className="grid grid-cols-2 gap-3 items-stretch">
+                            <button
+                              type="button"
+                              disabled={
+                                enviandoVoto !== null ||
+                                tempoVotacaoEsgotado ||
+                                meuVotoAtual === 'SIM'
+                              }
+                              onClick={() => void handleVotar('SIM')}
+                              className={`w-full min-h-[108px] rounded-2xl px-3 py-3.5 font-extrabold transition flex flex-col items-center justify-center text-center gap-1.5 border-2 overflow-hidden disabled:cursor-default ${
+                                meuVotoAtual === 'SIM'
+                                  ? 'bg-emerald-600 text-white border-emerald-800 shadow-lg ring-4 ring-emerald-500/25'
+                                  : 'bg-emerald-50/90 text-emerald-950 border-emerald-400 hover:bg-emerald-100 disabled:opacity-60'
+                              }`}
+                            >
+                              <div className="flex items-center justify-center gap-2">
+                                <ThumbsUp className="w-5 h-5 shrink-0" />
+                                <span className="text-lg font-black tracking-wide leading-none">
+                                  {enviandoVoto === 'SIM' ? 'Enviando...' : 'SIM'}
+                                </span>
+                              </div>
+                              <span
+                                className={`text-[11px] font-bold uppercase tracking-wider leading-none ${
+                                  meuVotoAtual === 'SIM' ? 'text-emerald-100' : 'text-emerald-800'
+                                }`}
+                              >
+                                Aprovar
                               </span>
-                            ) : null}
-                          </button>
+                              {meuVotoAtual === 'SIM' ? (
+                                <span className="mt-0.5 inline-flex items-center gap-1 max-w-full rounded-full bg-white/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-white whitespace-nowrap">
+                                  <Check className="w-3 h-3 shrink-0" />
+                                  Confirmado
+                                </span>
+                              ) : null}
+                            </button>
 
-                          <button
-                            type="button"
-                            disabled={
-                              enviandoVoto !== null ||
-                              tempoVotacaoEsgotado ||
-                              meuVotoAtual === 'NAO'
-                            }
-                            onClick={() => void handleVotar('NAO')}
-                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:cursor-default ${
-                              meuVotoAtual === 'NAO'
-                                ? 'bg-rose-600 text-white border-rose-800 shadow-lg ring-4 ring-rose-500/25'
-                                : 'bg-rose-50/90 text-rose-950 border-rose-400 hover:bg-rose-100 disabled:opacity-60'
-                            }`}
-                          >
-                            <span className="flex items-center gap-3">
-                              <ThumbsDown className="w-5 h-5" />
-                              {enviandoVoto === 'NAO' ? 'Registrando...' : 'NÃO (REJEITAR)'}
-                            </span>
-                            {meuVotoAtual === 'NAO' ? (
-                              <span className="text-xs uppercase px-2.5 py-1 rounded-full bg-white/20 font-bold">
-                                Confirmado ✓
+                            <button
+                              type="button"
+                              disabled={
+                                enviandoVoto !== null ||
+                                tempoVotacaoEsgotado ||
+                                meuVotoAtual === 'NAO'
+                              }
+                              onClick={() => void handleVotar('NAO')}
+                              className={`w-full min-h-[108px] rounded-2xl px-3 py-3.5 font-extrabold transition flex flex-col items-center justify-center text-center gap-1.5 border-2 overflow-hidden disabled:cursor-default ${
+                                meuVotoAtual === 'NAO'
+                                  ? 'bg-rose-600 text-white border-rose-800 shadow-lg ring-4 ring-rose-500/25'
+                                  : 'bg-rose-50/90 text-rose-950 border-rose-400 hover:bg-rose-100 disabled:opacity-60'
+                              }`}
+                            >
+                              <div className="flex items-center justify-center gap-2">
+                                <ThumbsDown className="w-5 h-5 shrink-0" />
+                                <span className="text-lg font-black tracking-wide leading-none">
+                                  {enviandoVoto === 'NAO' ? 'Enviando...' : 'NÃO'}
+                                </span>
+                              </div>
+                              <span
+                                className={`text-[11px] font-bold uppercase tracking-wider leading-none ${
+                                  meuVotoAtual === 'NAO' ? 'text-rose-100' : 'text-rose-800'
+                                }`}
+                              >
+                                Rejeitar
                               </span>
-                            ) : null}
-                          </button>
-                        </div>
+                              {meuVotoAtual === 'NAO' ? (
+                                <span className="mt-0.5 inline-flex items-center gap-1 max-w-full rounded-full bg-white/20 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-white whitespace-nowrap">
+                                  <Check className="w-3 h-3 shrink-0" />
+                                  Confirmado
+                                </span>
+                              ) : null}
+                            </button>
+                          </div>
+                        ) : tipoVotacaoAberta === 'MULTIPLA_UNICA' ? (
+                          <div className="space-y-2.5">
+                            {opcoesPautaAberta.map((opt, idx) => {
+                              const paleta = obterPaletaOpcaoMultipla(idx);
+                              const selecionada =
+                                meuVotoAtual === 'MULTIPLA' &&
+                                minhasEscolhasConfirmadas.includes(opt.id);
+                              const enviandoEsta = enviandoVoto === opt.id;
+
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  disabled={
+                                    enviandoVoto !== null || tempoVotacaoEsgotado || selecionada
+                                  }
+                                  onClick={() => void handleVotarMultipla([opt.id])}
+                                  className={`w-full min-h-[64px] rounded-2xl px-4 py-3 text-left transition flex items-center justify-between gap-3 border-2 overflow-hidden disabled:cursor-default ${
+                                    selecionada
+                                      ? `${paleta.cardSelected} shadow-md`
+                                      : `${paleta.cardLight} hover:brightness-95 disabled:opacity-60`
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span
+                                      className={`w-8 h-8 rounded-xl font-mono text-sm font-black flex items-center justify-center shrink-0 ${
+                                        selecionada
+                                          ? 'bg-white/20 text-white'
+                                          : 'bg-[#0C0C0D] text-milano-gold'
+                                      }`}
+                                    >
+                                      {opt.sigla}
+                                    </span>
+                                    <span className="text-sm font-extrabold leading-snug break-words">
+                                      {enviandoEsta ? 'Registrando voto...' : opt.label}
+                                    </span>
+                                  </div>
+
+                                  {selecionada ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-black uppercase text-white shrink-0 whitespace-nowrap">
+                                      <Check className="w-3 h-3" />
+                                      Confirmado
+                                    </span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between text-xs font-bold text-slate-600">
+                              <span>
+                                Selecionadas:{' '}
+                                <strong className="font-mono text-slate-900">
+                                  {selecaoMultipla.length}
+                                </strong>{' '}
+                                / {pautaAberta.max_escolhas ?? opcoesPautaAberta.length}
+                              </span>
+                              {selecaoMultipla.length > 0 && !tempoVotacaoEsgotado ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelecaoMultipla([])}
+                                  className="text-xs font-bold text-slate-500 hover:text-slate-900 underline"
+                                >
+                                  Limpar seleção
+                                </button>
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-2">
+                              {opcoesPautaAberta.map((opt, idx) => {
+                                const paleta = obterPaletaOpcaoMultipla(idx);
+                                const marcada = selecaoMultipla.includes(opt.id);
+                                const confirmadaNoBanco =
+                                  meuVotoAtual === 'MULTIPLA' &&
+                                  minhasEscolhasConfirmadas.includes(opt.id);
+
+                                return (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    disabled={enviandoVoto !== null || tempoVotacaoEsgotado}
+                                    onClick={() => alternarOpcaoMultiplaVarias(opt.id)}
+                                    className={`w-full min-h-[60px] rounded-2xl px-4 py-3 text-left transition flex items-center justify-between gap-3 border-2 overflow-hidden disabled:opacity-60 ${
+                                      marcada
+                                        ? `${paleta.cardSelected} shadow-md`
+                                        : 'bg-slate-50 border-slate-300 text-slate-900 hover:border-slate-400'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <span
+                                        className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 ${
+                                          marcada
+                                            ? 'bg-white text-slate-950 border-white'
+                                            : 'bg-white border-slate-400'
+                                        }`}
+                                      >
+                                        {marcada ? <Check className="w-4 h-4 stroke-[3]" /> : null}
+                                      </span>
+                                      <span
+                                        className={`px-2 py-0.5 rounded-md font-mono text-xs font-black shrink-0 ${
+                                          marcada
+                                            ? 'bg-white/20 text-white'
+                                            : 'bg-[#0C0C0D] text-milano-gold'
+                                        }`}
+                                      >
+                                        {opt.sigla}
+                                      </span>
+                                      <span className="text-sm font-extrabold leading-snug break-words">
+                                        {opt.label}
+                                      </span>
+                                    </div>
+
+                                    {confirmadaNoBanco ? (
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase shrink-0 whitespace-nowrap">
+                                        Salvo
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            <button
+                              type="button"
+                              disabled={
+                                enviandoVoto !== null ||
+                                tempoVotacaoEsgotado ||
+                                selecaoMultipla.length === 0 ||
+                                (meuVotoAtual === 'MULTIPLA' &&
+                                  listasIguais(minhasEscolhasConfirmadas, selecaoMultipla))
+                              }
+                              onClick={() => void handleVotarMultipla(selecaoMultipla)}
+                              className="w-full min-h-[54px] rounded-2xl bg-[#0C0C0D] text-milano-gold font-black text-sm uppercase tracking-wider shadow-md hover:bg-slate-900 disabled:opacity-45 flex items-center justify-center gap-2 transition"
+                            >
+                              <CheckCircle2 className="w-5 h-5" />
+                              {enviandoVoto !== null
+                                ? 'Registrando Voto...'
+                                : meuVotoAtual === 'MULTIPLA' &&
+                                    listasIguais(minhasEscolhasConfirmadas, selecaoMultipla)
+                                  ? `Voto Confirmado (${selecaoMultipla.length} ${
+                                      selecaoMultipla.length === 1 ? 'opção' : 'opções'
+                                    })`
+                                  : `Confirmar Voto (${selecaoMultipla.length} ${
+                                      selecaoMultipla.length === 1 ? 'opção' : 'opções'
+                                    })`}
+                            </button>
+                          </div>
+                        )}
 
                         {erroVoto ? (
                           <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800 font-medium">
@@ -1271,17 +1685,15 @@ export default function PaginaMorador() {
                           </div>
                         ) : null}
 
-                        {feedbackVoto || meuVotoAtual ? (
+                        {feedbackVoto || meuVotoRegistroAtual ? (
                           <div className="rounded-xl bg-emerald-50 border border-emerald-300 p-3.5 text-xs font-bold text-emerald-950 flex items-center gap-2">
                             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                             <span>
                               {feedbackVoto ??
-                                `Seu voto [${
-                                  meuVotoAtual === 'NAO' ? 'NÃO' : 'SIM'
-                                }] está computado para ${formatarUnidadeTelaoCompacta(
-                                  unidadeAtivaSessao.bloco,
-                                  unidadeAtivaSessao.apartamento
-                                )}! Enquanto a votação estiver aberta, você pode alterá-lo tocando na outra opção.`}
+                                `Seu voto [${formatarVotoLegivel(
+                                  meuVotoRegistroAtual!,
+                                  pautaAberta
+                                )}] está computado! Enquanto a votação estiver aberta, você pode alterá-lo.`}
                             </span>
                           </div>
                         ) : null}
@@ -1319,9 +1731,11 @@ export default function PaginaMorador() {
             (() => {
               const mostrarVencedor =
                 pautaEmFoco.status === 'encerrada' || tempoVotacaoEsgotado;
-              const simVenceu = mostrarVencedor && placarAoVivo.vencedor === 'SIM';
-              const naoVenceu = mostrarVencedor && placarAoVivo.vencedor === 'NAO';
+              const isMultiplaPlacar = placarAoVivo.tipoVotacao !== 'SIM_NAO';
+              const simVenceu = !isMultiplaPlacar && mostrarVencedor && placarAoVivo.vencedor === 'SIM';
+              const naoVenceu = !isMultiplaPlacar && mostrarVencedor && placarAoVivo.vencedor === 'NAO';
               const empatou = mostrarVencedor && placarAoVivo.vencedor === 'EMPATE';
+              const opcoesVencedoras = placarAoVivo.opcoes.filter((o) => o.ehVencedora);
 
               return (
                 <div className="space-y-3 tabular-nums">
@@ -1331,99 +1745,153 @@ export default function PaginaMorador() {
 
                   {mostrarVencedor && placarAoVivo.totalVotosRegistrados > 0 ? (
                     <div
-                      className={`rounded-xl px-3.5 py-2.5 border-2 flex items-center justify-between gap-2 ${
-                        simVenceu
-                          ? 'bg-emerald-600 border-emerald-800 text-white'
-                          : naoVenceu
-                            ? 'bg-rose-600 border-rose-800 text-white'
-                            : 'bg-amber-500 border-amber-700 text-slate-950'
+                      className={`rounded-xl px-3.5 py-2.5 border-2 flex flex-wrap items-center justify-between gap-2 ${
+                        isMultiplaPlacar
+                          ? empatou
+                            ? 'bg-amber-500 border-amber-700 text-slate-950'
+                            : 'bg-[#0C0C0D] border-milano-gold text-white'
+                          : simVenceu
+                            ? 'bg-emerald-600 border-emerald-800 text-white'
+                            : naoVenceu
+                              ? 'bg-rose-600 border-rose-800 text-white'
+                              : 'bg-amber-500 border-amber-700 text-slate-950'
                       }`}
                     >
                       <span className="text-xs font-extrabold uppercase tracking-wider">
-                        {simVenceu
-                          ? '★ VENCEDOR • MAIORIA SIM (APROVADO)'
-                          : naoVenceu
-                            ? '★ VENCEDOR • MAIORIA NÃO (REJEITADO)'
-                            : 'EMPATE TÉCNICO'}
+                        {isMultiplaPlacar
+                          ? empatou
+                            ? `EMPATE: ${opcoesVencedoras.map((o) => `${o.sigla}`).join(' × ')}`
+                            : `★ MAIS VOTADA: ${opcoesVencedoras
+                                .map((o) => `${o.sigla} — ${o.label}`)
+                                .join(', ')}`
+                          : simVenceu
+                            ? '★ VENCEDOR • MAIORIA SIM (APROVADO)'
+                            : naoVenceu
+                              ? '★ VENCEDOR • MAIORIA NÃO (REJEITADO)'
+                              : 'EMPATE TÉCNICO'}
                       </span>
                       <span className="text-xs font-mono font-extrabold">
-                        SIM {placarAoVivo.sim} × {placarAoVivo.nao} NÃO
+                        {isMultiplaPlacar
+                          ? `${placarAoVivo.totalVotosRegistrados} unidade(s) votaram`
+                          : `SIM ${placarAoVivo.sim} × ${placarAoVivo.nao} NÃO`}
                       </span>
                     </div>
                   ) : null}
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <div
-                      className={`rounded-xl p-2.5 transition ${
-                        simVenceu
-                          ? 'bg-emerald-100 border-2 border-emerald-600 ring-2 ring-emerald-500/30 shadow-sm'
-                          : 'bg-emerald-50 border border-emerald-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-xs font-bold text-emerald-900">
-                        <span className="flex items-center gap-1">
-                          SIM
-                          {simVenceu ? (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-700 text-white text-[9px] uppercase font-extrabold">
-                              Vencedor
-                            </span>
-                          ) : null}
+                  {isMultiplaPlacar ? (
+                    <div className="space-y-2.5">
+                      {placarAoVivo.opcoes.map((opt, idx) => {
+                        const paleta = obterPaletaOpcaoMultipla(idx);
+                        const venceu = mostrarVencedor && opt.ehVencedora;
+                        return (
+                          <div
+                            key={opt.id}
+                            className={`rounded-xl p-3 border transition ${
+                              venceu
+                                ? 'bg-slate-900 text-white border-milano-gold ring-2 ring-milano-gold/40'
+                                : 'bg-slate-50 border-slate-200 text-slate-900'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded font-mono text-[11px] font-black shrink-0 ${
+                                    venceu
+                                      ? 'bg-milano-gold text-[#0C0C0D]'
+                                      : 'bg-[#0C0C0D] text-milano-gold'
+                                  }`}
+                                >
+                                  {opt.sigla}
+                                </span>
+                                <span className="truncate">{opt.label}</span>
+                              </span>
+                              <span className="font-mono font-extrabold shrink-0">
+                                {opt.votos} ({opt.pctVotantes.toFixed(0)}%)
+                              </span>
+                            </div>
+                            <div
+                              className={`mt-2 h-2 w-full rounded-full overflow-hidden ${
+                                venceu ? 'bg-white/15' : 'bg-slate-200'
+                              }`}
+                            >
+                              <div
+                                className={`h-full rounded-full transition-all duration-500 ${paleta.barClass}`}
+                                style={{ width: `${Math.min(100, opt.pctVotantes)}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      <div className="rounded-xl bg-amber-50/80 border border-amber-200 px-3 py-2 flex items-center justify-between text-xs font-bold text-amber-950">
+                        <span>Não Votaram (Abstenção / Imparcial)</span>
+                        <span className="font-mono">
+                          {placarAoVivo.naoVotaram} ({placarAoVivo.pctNaoVotaram.toFixed(1)}%)
                         </span>
-                        <span>{placarAoVivo.pctSimValidos.toFixed(1)}%</span>
                       </div>
-                      <p className="text-xl font-extrabold font-mono text-emerald-700 mt-0.5">
-                        {placarAoVivo.sim}
-                      </p>
-                      <p className="text-[10px] font-semibold text-emerald-800/80">
-                        {placarAoVivo.pctSim.toFixed(1)}% dos presentes
-                      </p>
                     </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-2 items-stretch">
+                        <div
+                          className={`rounded-xl p-2.5 flex flex-col justify-between min-h-[84px] transition ${
+                            simVenceu
+                              ? 'bg-emerald-100 border-2 border-emerald-600 ring-2 ring-emerald-500/30 shadow-sm'
+                              : 'bg-emerald-50 border border-emerald-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[11px] font-bold text-emerald-900 gap-1">
+                            <span>SIM</span>
+                            <span className="font-mono">{placarAoVivo.pctSimValidos.toFixed(0)}%</span>
+                          </div>
+                          <p className="text-xl font-extrabold font-mono text-emerald-700 leading-none">
+                            {placarAoVivo.sim}
+                          </p>
+                          <p className="text-[10px] font-semibold text-emerald-800/80 truncate">
+                            {simVenceu ? '★ Maioria' : `${placarAoVivo.pctSim.toFixed(0)}% pres.`}
+                          </p>
+                        </div>
 
-                    <div
-                      className={`rounded-xl p-2.5 transition ${
-                        naoVenceu
-                          ? 'bg-rose-100 border-2 border-rose-600 ring-2 ring-rose-500/30 shadow-sm'
-                          : 'bg-rose-50 border border-rose-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-xs font-bold text-rose-900">
-                        <span className="flex items-center gap-1">
-                          NÃO
-                          {naoVenceu ? (
-                            <span className="px-1.5 py-0.5 rounded bg-rose-700 text-white text-[9px] uppercase font-extrabold">
-                              Vencedor
-                            </span>
-                          ) : null}
-                        </span>
-                        <span>{placarAoVivo.pctNaoValidos.toFixed(1)}%</span>
+                        <div
+                          className={`rounded-xl p-2.5 flex flex-col justify-between min-h-[84px] transition ${
+                            naoVenceu
+                              ? 'bg-rose-100 border-2 border-rose-600 ring-2 ring-rose-500/30 shadow-sm'
+                              : 'bg-rose-50 border border-rose-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-[11px] font-bold text-rose-900 gap-1">
+                            <span>NÃO</span>
+                            <span className="font-mono">{placarAoVivo.pctNaoValidos.toFixed(0)}%</span>
+                          </div>
+                          <p className="text-xl font-extrabold font-mono text-rose-700 leading-none">
+                            {placarAoVivo.nao}
+                          </p>
+                          <p className="text-[10px] font-semibold text-rose-800/80 truncate">
+                            {naoVenceu ? '★ Maioria' : `${placarAoVivo.pctNao.toFixed(0)}% pres.`}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl bg-amber-50/80 border border-amber-200 p-2.5 flex flex-col justify-between min-h-[84px]">
+                          <div className="flex items-center justify-between text-[11px] font-bold text-amber-950 gap-1">
+                            <span className="truncate">ABST.</span>
+                            <span className="font-mono">{placarAoVivo.pctNaoVotaram.toFixed(0)}%</span>
+                          </div>
+                          <p className="text-xl font-extrabold font-mono text-amber-800 leading-none">
+                            {placarAoVivo.naoVotaram}
+                          </p>
+                          <p className="text-[10px] font-semibold text-amber-900/80 truncate">
+                            Não votou
+                          </p>
+                        </div>
                       </div>
-                      <p className="text-xl font-extrabold font-mono text-rose-700 mt-0.5">
-                        {placarAoVivo.nao}
-                      </p>
-                      <p className="text-[10px] font-semibold text-rose-800/80">
-                        {placarAoVivo.pctNao.toFixed(1)}% dos presentes
-                      </p>
-                    </div>
 
-                    <div className="rounded-xl bg-amber-50/80 border border-amber-200 p-2.5">
-                      <div className="flex items-center justify-between text-xs font-bold text-amber-950">
-                        <span>NÃO VOTOU</span>
-                        <span>{placarAoVivo.pctNaoVotaram.toFixed(1)}%</span>
-                      </div>
-                      <p className="text-xl font-extrabold font-mono text-amber-800 mt-0.5">
-                        {placarAoVivo.naoVotaram}
-                      </p>
-                      <p className="text-[10px] font-semibold text-amber-900/80">
-                        Abstenção / Imparcial
-                      </p>
-                    </div>
-                  </div>
-
-                  {empatou ? (
-                    <p className="text-[11px] font-bold text-amber-800 text-center">
-                      Empate entre SIM ({placarAoVivo.sim}) e NÃO ({placarAoVivo.nao})
-                    </p>
-                  ) : null}
+                      {empatou ? (
+                        <p className="text-[11px] font-bold text-amber-800 text-center">
+                          Empate entre SIM ({placarAoVivo.sim}) e NÃO ({placarAoVivo.nao})
+                        </p>
+                      ) : null}
+                    </>
+                  )}
 
                   {/* Resumo privado exclusivo dos votos das unidades da própria sessão */}
                   {sessao && sessao.unidadesAutorizadas.length > 0 ? (
@@ -1439,15 +1907,17 @@ export default function PaginaMorador() {
                             <span
                               key={ch}
                               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs font-bold ${
-                                v === 'SIM'
+                                v?.voto === 'SIM'
                                   ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
-                                  : v === 'NAO'
+                                  : v?.voto === 'NAO'
                                     ? 'bg-rose-50 border-rose-300 text-rose-900'
-                                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                                    : v?.voto === 'MULTIPLA'
+                                      ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
+                                      : 'bg-slate-50 border-slate-200 text-slate-700'
                               }`}
                             >
                               {formatarUnidadeTelaoCompacta(u.bloco, u.apartamento)}:
-                              <span>{v === 'SIM' ? 'SIM' : v === 'NAO' ? 'NÃO' : 'Não votou'}</span>
+                              <span>{v ? formatarVotoLegivel(v, pautaEmFoco) : 'Não votou'}</span>
                             </span>
                           );
                         })}

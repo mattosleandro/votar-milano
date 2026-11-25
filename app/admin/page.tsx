@@ -16,11 +16,13 @@ import {
   ListChecks,
   Lock,
   Mail,
+  Menu,
   PlusCircle,
   RefreshCw,
   Settings2,
   ShieldAlert,
   ShieldCheck,
+  Smartphone,
   UserCheck,
   Wifi,
   WifiOff,
@@ -68,6 +70,7 @@ export default function PaginaAdminMesa() {
   const [erroLogin, setErroLogin] = useState<string | null>(null);
 
   const [abaAtiva, setAbaAtiva] = useState<AbaAdmin>('CONVOCACOES');
+  const [menuMobileAberto, setMenuMobileAberto] = useState(false);
   const [notificacao, setNotificacao] = useState<NotificacaoAdmin | null>(null);
   const [criandoNovaAsm, setCriandoNovaAsm] = useState(false);
 
@@ -369,455 +372,593 @@ export default function PaginaAdminMesa() {
   }
 
   // ===========================================================================
-  // CONSOLE OPERACIONAL DA MESA DIRETORA (/admin)
+  // CONSOLE OPERACIONAL DA MESA DIRETORA (/admin) — COM MENU LATERAL (SIDEBAR)
   // ===========================================================================
-  const ABAS: {
+  interface ItemMenuAdmin {
     id: AbaAdmin;
     rotulo: string;
+    descricao: string;
     icone: React.ReactNode;
     contador?: number;
-  }[] = [
+    destaqueVivo?: boolean;
+  }
+
+  const GRUPOS_MENU: { titulo: string; itens: ItemMenuAdmin[] }[] = [
     {
-      id: 'CONVOCACOES',
-      rotulo: '1. Quórum, Horários & Timer',
-      icone: <Settings2 className="h-4 w-4" />,
+      titulo: 'Operação da Assembleia',
+      itens: [
+        {
+          id: 'CONVOCACOES',
+          rotulo: 'Quórum, Horários & Timer',
+          descricao: 'Convocação, escopo, cronômetro e encerramento',
+          icone: <Settings2 className="h-4 w-4" />,
+        },
+        {
+          id: 'PAUTAS',
+          rotulo: 'Pautas & Votação',
+          descricao: 'Sim/Não, múltipla escolha, rodadas e placar',
+          icone: <ListChecks className="h-4 w-4" />,
+          contador: pautas.length,
+          destaqueVivo: Boolean(pautaAberta),
+        },
+      ],
     },
     {
-      id: 'PORTARIA',
-      rotulo: '2. Portaria / Entrada (CPF)',
-      icone: <UserCheck className="h-4 w-4" />,
-      contador: contadores.moradores,
+      titulo: 'Credenciamento & Unidades',
+      itens: [
+        {
+          id: 'PORTARIA',
+          rotulo: 'Portaria / Entrada (CPF)',
+          descricao: 'Confirmação de entrada e procurações',
+          icone: <UserCheck className="h-4 w-4" />,
+          contador: contadores.moradores,
+        },
+        {
+          id: 'CADASTRO_BASE',
+          rotulo: 'Cadastro Geral (544)',
+          descricao: 'Base de moradores, CPFs e importação CSV',
+          icone: <Database className="h-4 w-4" />,
+          contador: unidadesCadastradas.length,
+        },
+        {
+          id: 'INADIMPLENTES',
+          rotulo: 'Grade Inadimplentes',
+          descricao: 'Bloqueio e liberação rápida por bloco',
+          icone: <ShieldAlert className="h-4 w-4" />,
+          contador: inadimplentes.length,
+        },
+        {
+          id: 'CONSTRUTORA',
+          rotulo: 'Construtora',
+          descricao: 'Unidades da construtora e voto em lote',
+          icone: <Building2 className="h-4 w-4" />,
+          contador: contadores.construtora,
+        },
+      ],
     },
     {
-      id: 'CADASTRO_BASE',
-      rotulo: '3. Cadastro Geral & Inadimplentes',
-      icone: <Database className="h-4 w-4" />,
-      contador: unidadesCadastradas.length,
-    },
-    {
-      id: 'PAUTAS',
-      rotulo: '4. Pautas & Votação',
-      icone: <ListChecks className="h-4 w-4" />,
-      contador: pautas.length,
-    },
-    {
-      id: 'CONSTRUTORA',
-      rotulo: '5. Construtora',
-      icone: <Building2 className="h-4 w-4" />,
-      contador: contadores.construtora,
-    },
-    {
-      id: 'INADIMPLENTES',
-      rotulo: '6. Grade Inadimplentes',
-      icone: <ShieldAlert className="h-4 w-4" />,
-      contador: inadimplentes.length,
-    },
-    {
-      id: 'PRESENCAS_CSV',
-      rotulo: '7. Presenças, Aparelhos & CSV',
-      icone: <FileSpreadsheet className="h-4 w-4" />,
-      contador: contadores.totalPresentes,
-    },
-    {
-      id: 'AUDITORIA',
-      rotulo: '8. Auditoria Imutável',
-      icone: <ShieldCheck className="h-4 w-4" />,
-      contador: operacoesAuditoria.length + votosAuditoria.length,
+      titulo: 'Relatórios & Auditoria',
+      itens: [
+        {
+          id: 'PRESENCAS_CSV',
+          rotulo: 'Presenças, Aparelhos & CSV',
+          descricao: 'Suporte de mesa, telemetria e planilhas',
+          icone: <FileSpreadsheet className="h-4 w-4" />,
+          contador: contadores.totalPresentes,
+        },
+        {
+          id: 'AUDITORIA',
+          rotulo: 'Auditoria Imutável',
+          descricao: 'Trilha append-only de votos e operações',
+          icone: <ShieldCheck className="h-4 w-4" />,
+          contador: operacoesAuditoria.length + votosAuditoria.length,
+        },
+      ],
     },
   ];
 
+  const itemMenuAtual =
+    GRUPOS_MENU.flatMap((g) => g.itens).find((i) => i.id === abaAtiva) ??
+    GRUPOS_MENU[0].itens[0];
+
   const temAssembleiaAtiva = assembleias.some((a) => a.status === 'ativa');
 
-  return (
-    <div className="min-h-screen bg-[#F6F5F1] text-slate-900">
-      {/* Cabeçalho Institucional Escuro */}
-      <header className="sticky top-0 z-30 border-b border-[#CCB285]/30 bg-[#0C0C0D] text-white shadow-md">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
-          <div className="flex items-center gap-3.5">
-            <MilanoLogo variant="dark" className="h-9 w-auto sm:h-10" />
-            <div className="hidden h-7 w-px bg-slate-800 sm:block" />
-            <div>
-              <div className="text-xs font-extrabold uppercase tracking-wider text-[#CCB285]">
-                Console da Mesa Diretora (V2)
-              </div>
-              <div className="text-[11px] text-slate-400">
-                {usuarioEmail || 'admin@portalmilano.com'}
-              </div>
-            </div>
-          </div>
+  const selecionarAba = (id: AbaAdmin) => {
+    setAbaAtiva(id);
+    setMenuMobileAberto(false);
+  };
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Seletor Multi-Assembleia (Ativa + Históricas como 19/11/2026) */}
-            {assembleias.length > 0 && (
-              <div className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs">
-                <Calendar className="h-3.5 w-3.5 text-[#CCB285]" />
-                <select
-                  aria-label="Selecionar Assembleia"
-                  value={assembleiaSelecionadaId || ''}
-                  onChange={(e) => setAssembleiaSelecionadaId(e.target.value)}
-                  className="bg-transparent font-bold text-white focus:outline-none"
-                >
-                  {assembleias.map((asm) => (
-                    <option key={asm.id} value={asm.id} className="bg-slate-900 text-white">
-                      {asm.titulo} [{asm.status.toUpperCase()}]
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {!temAssembleiaAtiva && (
-              <button
-                type="button"
-                disabled={criandoNovaAsm}
-                onClick={() => void handleCriarNovaAssembleiaRapida()}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-extrabold text-white transition hover:bg-emerald-500 disabled:opacity-50"
-              >
-                <PlusCircle className="h-3.5 w-3.5" />
-                {criandoNovaAsm ? 'Criando...' : 'Nova Assembleia'}
-              </button>
-            )}
-
-            {/* Indicador Sincronização */}
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${
-                statusConexao === 'AO_VIVO'
-                  ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
-                  : 'border-amber-500/40 bg-amber-950/60 text-amber-300'
-              }`}
-            >
-              {statusConexao === 'AO_VIVO' ? (
-                <Wifi className="h-3.5 w-3.5" />
-              ) : (
-                <WifiOff className="h-3.5 w-3.5" />
-              )}
-              {statusConexao === 'AO_VIVO' ? 'Conectado' : 'Reconectando...'}
-            </span>
-
-            <button
-              type="button"
-              onClick={() => void recarregarTudo()}
-              title="Ressincronizar dados agora"
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-bold text-slate-200 transition hover:border-[#CCB285] hover:text-white"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Sincronizar</span>
-            </button>
-
-            <Link
-              href="/portaria"
-              target="_blank"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#CCB285]/60 bg-[#CCB285]/15 px-3 py-1.5 text-xs font-extrabold text-[#CCB285] transition hover:bg-[#CCB285]/25"
-            >
-              <UserCheck className="h-3.5 w-3.5" />
-              Portaria
-            </Link>
-
-            <Link
-              href="/telao"
-              target="_blank"
-              className="inline-flex items-center gap-1.5 rounded-xl bg-[#CCB285] px-3.5 py-1.5 text-xs font-black uppercase tracking-wide text-[#0C0C0D] transition hover:bg-[#DFCCA9]"
-            >
-              Telão
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
-
-            <button
-              type="button"
-              onClick={() => void handleSair()}
-              className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-rose-500 hover:text-rose-300"
-            >
-              <Lock className="h-3.5 w-3.5" />
-              Sair
-            </button>
-          </div>
+  const conteudoSidebar = (
+    <div className="flex h-full flex-col bg-[#0C0C0D] text-white">
+      {/* Cabeçalho da Marca na Sidebar */}
+      <div className="flex items-center justify-between gap-2 border-b border-slate-800/90 px-4 py-4">
+        <div className="min-w-0">
+          <MilanoLogo variant="dark" className="h-8 w-auto" />
+          <p className="mt-2 text-[10px] font-extrabold uppercase tracking-widest text-[#CCB285]">
+            Mesa Diretora • V2
+          </p>
+          <p className="truncate text-[11px] text-slate-400">
+            {usuarioEmail || 'admin@portalmilano.com'}
+          </p>
         </div>
-      </header>
 
-      <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
-        {/* Banner indicando quando está visualizando assembleia histórica encerrada */}
-        {assembleiaAtual && assembleiaAtual.status === 'encerrada' && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-slate-300 bg-slate-100 px-4 py-3 text-xs font-bold text-slate-800">
-            <div>
-              Modo Consulta Histórica:{' '}
-              <span className="text-slate-950">{assembleiaAtual.titulo}</span> está{' '}
-              <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-white">
-                ENCERRADA (SOMENTE LEITURA)
-              </span>
-              . Todos os {presencas.length} check-ins, {pautas.length} pautas e {votos.length} votos
-              estão preservados.
-            </div>
-            {!temAssembleiaAtiva && (
-              <button
-                type="button"
-                disabled={criandoNovaAsm}
-                onClick={() => void handleCriarNovaAssembleiaRapida()}
-                className="rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-extrabold text-white hover:bg-emerald-800"
-              >
-                + Iniciar Nova Assembleia
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* Toast / Banner de Feedback */}
-        {notificacao && (
-          <div
-            role="status"
-            className={`flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold shadow-sm sm:text-sm ${
-              notificacao.ok
-                ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
-                : 'border-rose-300 bg-rose-50 text-rose-950'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              {notificacao.ok ? (
-                <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
-              ) : (
-                <AlertCircle className="h-5 w-5 shrink-0 text-rose-600" />
-              )}
-              <span>{notificacao.mensagem}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setNotificacao(null)}
-              aria-label="Fechar notificação"
-              className="rounded-lg p-1 hover:bg-black/5"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        )}
-
-        {erroConexao && (
-          <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-900">
-            Erro de sincronização com o Supabase: {erroConexao}
-          </div>
-        )}
-
-        {/* Faixa de Indicadores Rápidos (KPIs ao Vivo) */}
-        <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Base Cadastrada
-            </div>
-            <div className="mt-1 font-mono text-2xl font-extrabold text-slate-900 tabular-nums">
-              {unidadesCadastradas.length}
-              <span className="text-xs font-semibold text-slate-400"> / 544</span>
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">Unidades no banco</div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Presentes (Check-in)
-            </div>
-            <div className="mt-1 font-mono text-2xl font-extrabold text-emerald-700 tabular-nums">
-              {contadores.totalPresentes}
-              <span className="text-xs font-semibold text-slate-400"> / 544</span>
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              {contadores.moradores} morad. • {contadores.construtora} const.
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Convocação &amp; Quórum
-            </div>
-            <div className="mt-1 text-sm font-extrabold text-slate-900">
-              {!config.assembleia_ativa
-                ? 'Encerrada / Inativa'
-                : config.convocacao_ativa === 'PRIMEIRA'
-                  ? `1ª Conv. (${config.horario_primeira_convocacao})`
-                  : config.convocacao_ativa === 'SEGUNDA'
-                    ? `2ª Conv. (${config.horario_segunda_convocacao})`
-                    : `Aguardando (${config.horario_primeira_convocacao})`}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              Escopo: {config.escopo_assembleia}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Unid. Construtora
-            </div>
-            <div className="mt-1 font-mono text-2xl font-extrabold text-[#A88E61] tabular-nums">
-              {contadores.construtora}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">1 voto por apto</div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Inadimplentes (Total)
-            </div>
-            <div className="mt-1 font-mono text-2xl font-extrabold text-rose-600 tabular-nums">
-              {config.total_inadimplentes}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">Apenas nº total é público</div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-              Pauta Aberta
-            </div>
-            <div className="mt-1 truncate text-sm font-extrabold text-slate-900">
-              {pautaAberta
-                ? `#${String(pautaAberta.ordem).padStart(2, '0')} — ${pautaAberta.titulo}`
-                : 'Nenhuma aberta'}
-            </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">{pautas.length} pauta(s)</div>
-          </div>
-        </section>
-
-        {/* Navegação por Abas Operacionais */}
-        <nav
-          aria-label="Seções do painel da Mesa"
-          className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm"
+        <button
+          type="button"
+          onClick={() => setMenuMobileAberto(false)}
+          aria-label="Fechar menu lateral"
+          className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white lg:hidden"
         >
-          {ABAS.map((aba) => {
-            const ativa = abaAtiva === aba.id;
-            return (
-              <button
-                key={aba.id}
-                type="button"
-                onClick={() => setAbaAtiva(aba.id)}
-                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-extrabold transition sm:text-sm ${
-                  ativa
-                    ? 'bg-[#0C0C0D] text-[#CCB285] shadow-sm'
-                    : 'text-slate-700 hover:bg-slate-100'
-                }`}
-              >
-                {aba.icone}
-                <span>{aba.rotulo}</span>
-                {typeof aba.contador === 'number' && (
-                  <span
-                    className={`rounded-full px-2 py-0.5 font-mono text-[11px] tabular-nums ${
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      {/* Seletor de Assembleia + Nova Assembleia */}
+      <div className="space-y-2 border-b border-slate-800/90 px-4 py-3">
+        <label className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+          <Calendar className="h-3 w-3 text-[#CCB285]" />
+          Assembleia em Foco
+        </label>
+        {assembleias.length > 0 && (
+          <select
+            aria-label="Selecionar Assembleia"
+            value={assembleiaSelecionadaId || ''}
+            onChange={(e) => setAssembleiaSelecionadaId(e.target.value)}
+            className="w-full rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-2 text-xs font-bold text-white focus:border-[#CCB285] focus:outline-none"
+          >
+            {assembleias.map((asm) => (
+              <option key={asm.id} value={asm.id} className="bg-slate-900 text-white">
+                {asm.titulo} [{asm.status.toUpperCase()}]
+              </option>
+            ))}
+          </select>
+        )}
+
+        {!temAssembleiaAtiva && (
+          <button
+            type="button"
+            disabled={criandoNovaAsm}
+            onClick={() => void handleCriarNovaAssembleiaRapida()}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            {criandoNovaAsm ? 'Criando...' : 'Iniciar Nova Assembleia'}
+          </button>
+        )}
+      </div>
+
+      {/* Navegação Lateral Agrupada */}
+      <nav
+        aria-label="Menu lateral da Mesa Diretora"
+        className="flex-1 space-y-5 overflow-y-auto px-3 py-4 custom-scrollbar"
+      >
+        {GRUPOS_MENU.map((grupo) => (
+          <div key={grupo.titulo} className="space-y-1">
+            <p className="px-2.5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+              {grupo.titulo}
+            </p>
+            <div className="space-y-1">
+              {grupo.itens.map((item) => {
+                const ativa = abaAtiva === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => selecionarAba(item.id)}
+                    className={`group flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-left text-xs font-bold transition ${
                       ativa
-                        ? 'bg-[#CCB285]/20 text-white'
-                        : 'bg-slate-200/80 text-slate-700'
+                        ? 'bg-[#CCB285] text-[#0C0C0D] shadow-md'
+                        : 'text-slate-300 hover:bg-slate-900 hover:text-white'
                     }`}
                   >
-                    {aba.contador}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <span
+                        className={`shrink-0 ${
+                          ativa
+                            ? 'text-[#0C0C0D]'
+                            : 'text-[#CCB285]/80 group-hover:text-[#CCB285]'
+                        }`}
+                      >
+                        {item.icone}
+                      </span>
+                      <span className="truncate">{item.rotulo}</span>
+                    </span>
 
-        {/* Conteúdo da Aba Selecionada */}
-        {carregandoInicial ? (
-          <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-sm font-semibold text-slate-500">
-            Carregando dados da Assembleia...
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {item.destaqueVivo && (
+                        <span
+                          title="Há uma votação aberta ao vivo"
+                          className={`h-2 w-2 rounded-full animate-pulse ${
+                            ativa ? 'bg-emerald-800' : 'bg-emerald-400'
+                          }`}
+                        />
+                      )}
+                      {typeof item.contador === 'number' && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-black tabular-nums ${
+                            ativa
+                              ? 'bg-[#0C0C0D]/15 text-[#0C0C0D]'
+                              : 'bg-slate-800 text-slate-300'
+                          }`}
+                        >
+                          {item.contador}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ) : (
-          <>
-            {abaAtiva === 'CONVOCACOES' && (
-              <AdminConvocacoesSection
-                config={config}
-                presencas={presencas}
-                pautas={pautas}
-                votos={votos}
-                historicoAssembleias={historicoAssembleias}
-                onSalvarConfig={salvarConfiguracao}
-                onControlarTimer={controlarTimerTelao}
-                onSalvarAssembleia={salvarAssembleiaNoHistorico}
-                onEncerrarEArquivar={encerrarEArquivarAssembleia}
-                onResetarAssembleia={resetarAssembleiaParaNova}
-                onExcluirHistorico={excluirAssembleiaDoHistorico}
-                onNotificar={notificar}
-              />
-            )}
+        ))}
+      </nav>
 
-            {abaAtiva === 'PORTARIA' && (
-              <AdminPortariaSection
-                config={config}
-                unidades={unidadesCadastradas}
-                presencas={presencas}
-                inadimplentes={inadimplentes}
-                onConfirmarPortaria={confirmarPresencaPortaria}
-                onRemoverPresenca={removerPresencaMesa}
-                onNotificar={notificar}
-              />
-            )}
+      {/* Rodapé da Sidebar: Atalhos Rápidos & Sair */}
+      <div className="space-y-2 border-t border-slate-800/90 p-3">
+        <div className="grid grid-cols-2 gap-1.5">
+          <Link
+            href="/telao"
+            target="_blank"
+            className="inline-flex items-center justify-center gap-1 rounded-xl bg-[#CCB285] px-2.5 py-2 text-[11px] font-black uppercase tracking-wide text-[#0C0C0D] transition hover:bg-[#DFCCA9]"
+          >
+            Telão
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+          <Link
+            href="/portaria"
+            target="_blank"
+            className="inline-flex items-center justify-center gap-1 rounded-xl border border-[#CCB285]/50 bg-[#CCB285]/10 px-2.5 py-2 text-[11px] font-extrabold text-[#CCB285] transition hover:bg-[#CCB285]/20"
+          >
+            Portaria
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+        </div>
 
-            {abaAtiva === 'CADASTRO_BASE' && (
-              <AdminCadastroUnidadesSection
-                unidades={unidadesCadastradas}
-                onSalvarUnidade={salvarUnidadeBase}
-                onImportarLote={importarUnidadesBaseEmLote}
-                onAlternarInadimplencia={alternarInadimplenciaUnidadeBase}
-                onRemoverUnidade={removerUnidadeBase}
-                onNotificar={notificar}
-              />
-            )}
+        <div className="flex items-center gap-1.5">
+          <Link
+            href="/"
+            target="_blank"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2 text-[11px] font-semibold text-slate-300 transition hover:border-slate-700 hover:text-white"
+          >
+            <Smartphone className="h-3.5 w-3.5 text-[#CCB285]" />
+            Tela Morador
+          </Link>
+          <button
+            type="button"
+            onClick={() => void handleSair()}
+            className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-800 bg-transparent px-3 py-2 text-[11px] font-semibold text-slate-300 transition hover:border-rose-500/70 hover:text-rose-300"
+          >
+            <Lock className="h-3.5 w-3.5" />
+            Sair
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
-            {abaAtiva === 'PAUTAS' && (
-              <AdminPautasSection
-                config={config}
-                pautas={pautas}
-                presencas={presencas}
-                votos={votos}
-                onCriarPauta={criarPauta}
-                onAbrirPauta={abrirPauta}
-                onEncerrarPauta={encerrarPauta}
-                onResetarPauta={resetarPauta}
-                onExcluirPauta={excluirPauta}
-                onControlarTimer={controlarTimerTelao}
-                onNotificar={notificar}
-              />
-            )}
+  return (
+    <div className="min-h-screen bg-[#F6F5F1] text-slate-900 flex">
+      {/* Sidebar Desktop Fixa */}
+      <aside className="hidden lg:block lg:w-72 xl:w-[292px] shrink-0 border-r border-[#CCB285]/20 sticky top-0 h-screen">
+        {conteudoSidebar}
+      </aside>
 
-            {abaAtiva === 'CONSTRUTORA' && (
-              <AdminConstrutoraSection
-                presencas={presencas}
-                inadimplentes={inadimplentes}
-                pautaAberta={pautaAberta}
-                votos={votos}
-                onAdicionarConstrutora={adicionarUnidadesConstrutora}
-                onRemoverConstrutora={removerUnidadesConstrutora}
-                onVotarEmLoteConstrutora={votarEmLoteConstrutora}
-                onNotificar={notificar}
-              />
-            )}
+      {/* Drawer Mobile / Tablet */}
+      {menuMobileAberto && (
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <div
+            className="fixed inset-0 bg-black/65 backdrop-blur-sm"
+            onClick={() => setMenuMobileAberto(false)}
+          />
+          <aside className="relative z-10 w-72 max-w-[85vw] h-full shadow-2xl">
+            {conteudoSidebar}
+          </aside>
+        </div>
+      )}
 
-            {abaAtiva === 'INADIMPLENTES' && (
-              <AdminInadimplentesSection
-                config={config}
-                inadimplentes={inadimplentes}
-                presencas={presencas}
-                onAdicionarInadimplentes={adicionarUnidadesInadimplentes}
-                onRemoverInadimplentes={removerUnidadesInadimplentes}
-                onNotificar={notificar}
-              />
-            )}
+      {/* Área Principal do Conteúdo */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Barra Superior Compacta da Seção Atual */}
+        <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/95 backdrop-blur px-4 py-3 sm:px-6 shadow-sm">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => setMenuMobileAberto(true)}
+                aria-label="Abrir menu lateral"
+                className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-[#0C0C0D] p-2 text-[#CCB285] shadow-sm lg:hidden"
+              >
+                <Menu className="h-5 w-5" />
+              </button>
 
-            {abaAtiva === 'PRESENCAS_CSV' && (
-              <AdminPresencasCsvSection
-                presencas={presencas}
-                pautas={pautas}
-                votos={votos}
-                onCredenciarManual={credenciarManualMesa}
-                onAtualizarPresenca={atualizarPresencaMesa}
-                onRemoverPresenca={removerPresencaMesa}
-                onNotificar={notificar}
-              />
-            )}
+              <div className="min-w-0">
+                <h1 className="truncate text-base sm:text-lg font-extrabold text-slate-900 flex items-center gap-2">
+                  <span className="text-[#A88E61] hidden sm:inline-flex">{itemMenuAtual.icone}</span>
+                  <span className="truncate">{itemMenuAtual.rotulo}</span>
+                </h1>
+                <p className="truncate text-xs text-slate-500">{itemMenuAtual.descricao}</p>
+              </div>
+            </div>
 
-            {abaAtiva === 'AUDITORIA' && (
-              <AdminAuditoriaSection
-                tituloAssembleia={assembleiaAtual?.titulo || 'Assembleia Geral Milano'}
-                pautas={pautas}
-                operacoes={operacoesAuditoria}
-                votosAuditoria={votosAuditoria}
-              />
-            )}
-          </>
-        )}
-      </main>
+            <div className="flex items-center gap-2 shrink-0">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
+                  statusConexao === 'AO_VIVO'
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                    : 'border-amber-300 bg-amber-50 text-amber-800'
+                }`}
+              >
+                {statusConexao === 'AO_VIVO' ? (
+                  <Wifi className="h-3.5 w-3.5" />
+                ) : (
+                  <WifiOff className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">
+                  {statusConexao === 'AO_VIVO' ? 'Conectado' : 'Reconectando...'}
+                </span>
+              </span>
+
+              <button
+                type="button"
+                onClick={() => void recarregarTudo()}
+                title="Ressincronizar dados agora"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 transition hover:border-[#0C0C0D] hover:bg-slate-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Sincronizar</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto w-full max-w-6xl space-y-5 px-4 py-5 sm:px-6">
+          {/* Banner indicando quando está visualizando assembleia histórica encerrada */}
+          {assembleiaAtual && assembleiaAtual.status === 'encerrada' && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-slate-300 bg-slate-100 px-4 py-3 text-xs font-bold text-slate-800">
+              <div>
+                Modo Consulta Histórica:{' '}
+                <span className="text-slate-950">{assembleiaAtual.titulo}</span> está{' '}
+                <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-white">
+                  ENCERRADA (SOMENTE LEITURA)
+                </span>
+                . Todos os {presencas.length} check-ins, {pautas.length} pautas e {votos.length} votos
+                estão preservados.
+              </div>
+              {!temAssembleiaAtiva && (
+                <button
+                  type="button"
+                  disabled={criandoNovaAsm}
+                  onClick={() => void handleCriarNovaAssembleiaRapida()}
+                  className="rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-extrabold text-white hover:bg-emerald-800"
+                >
+                  + Iniciar Nova Assembleia
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Toast / Banner de Feedback */}
+          {notificacao && (
+            <div
+              role="status"
+              className={`flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-bold shadow-sm sm:text-sm ${
+                notificacao.ok
+                  ? 'border-emerald-300 bg-emerald-50 text-emerald-950'
+                  : 'border-rose-300 bg-rose-50 text-rose-950'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                {notificacao.ok ? (
+                  <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="h-5 w-5 shrink-0 text-rose-600" />
+                )}
+                <span>{notificacao.mensagem}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotificacao(null)}
+                aria-label="Fechar notificação"
+                className="rounded-lg p-1 hover:bg-black/5"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {erroConexao && (
+            <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-900">
+              Erro de sincronização com o Supabase: {erroConexao}
+            </div>
+          )}
+
+          {/* Faixa de Indicadores Rápidos (KPIs padronizados com mesma altura) */}
+          <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6 items-stretch">
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Base Cadastrada
+              </div>
+              <div className="font-mono text-xl font-extrabold text-slate-900 tabular-nums leading-none">
+                {unidadesCadastradas.length}
+                <span className="text-xs font-semibold text-slate-400"> / 544</span>
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">Unidades no banco</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Presentes
+              </div>
+              <div className="font-mono text-xl font-extrabold text-emerald-700 tabular-nums leading-none">
+                {contadores.totalPresentes}
+                <span className="text-xs font-semibold text-slate-400"> / 544</span>
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">
+                {contadores.moradores} morad. • {contadores.construtora} const.
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Convocação
+              </div>
+              <div className="text-sm font-extrabold text-slate-900 truncate">
+                {!config.assembleia_ativa
+                  ? 'Encerrada / Inativa'
+                  : config.convocacao_ativa === 'PRIMEIRA'
+                    ? `1ª Conv. (${config.horario_primeira_convocacao})`
+                    : config.convocacao_ativa === 'SEGUNDA'
+                      ? `2ª Conv. (${config.horario_segunda_convocacao})`
+                      : `Aguardando (${config.horario_primeira_convocacao})`}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">
+                Escopo: {config.escopo_assembleia}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Construtora
+              </div>
+              <div className="font-mono text-xl font-extrabold text-[#A88E61] tabular-nums leading-none">
+                {contadores.construtora}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">1 voto por apto</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Inadimplentes
+              </div>
+              <div className="font-mono text-xl font-extrabold text-rose-600 tabular-nums leading-none">
+                {config.total_inadimplentes}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">Apenas nº total é público</div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm flex flex-col justify-between min-h-[88px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Pauta Aberta
+              </div>
+              <div className="truncate text-sm font-extrabold text-slate-900">
+                {pautaAberta
+                  ? `#${String(pautaAberta.ordem).padStart(2, '0')} — ${pautaAberta.titulo}`
+                  : 'Nenhuma aberta'}
+              </div>
+              <div className="text-[11px] text-slate-500 truncate">{pautas.length} pauta(s)</div>
+            </div>
+          </section>
+
+          {/* Conteúdo da Seção Selecionada no Menu Lateral */}
+          {carregandoInicial ? (
+            <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-sm font-semibold text-slate-500">
+              Carregando dados da Assembleia...
+            </div>
+          ) : (
+            <>
+              {abaAtiva === 'CONVOCACOES' && (
+                <AdminConvocacoesSection
+                  config={config}
+                  presencas={presencas}
+                  pautas={pautas}
+                  votos={votos}
+                  historicoAssembleias={historicoAssembleias}
+                  onSalvarConfig={salvarConfiguracao}
+                  onControlarTimer={controlarTimerTelao}
+                  onSalvarAssembleia={salvarAssembleiaNoHistorico}
+                  onEncerrarEArquivar={encerrarEArquivarAssembleia}
+                  onResetarAssembleia={resetarAssembleiaParaNova}
+                  onExcluirHistorico={excluirAssembleiaDoHistorico}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'PORTARIA' && (
+                <AdminPortariaSection
+                  config={config}
+                  unidades={unidadesCadastradas}
+                  presencas={presencas}
+                  inadimplentes={inadimplentes}
+                  onConfirmarPortaria={confirmarPresencaPortaria}
+                  onRemoverPresenca={removerPresencaMesa}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'CADASTRO_BASE' && (
+                <AdminCadastroUnidadesSection
+                  unidades={unidadesCadastradas}
+                  onSalvarUnidade={salvarUnidadeBase}
+                  onImportarLote={importarUnidadesBaseEmLote}
+                  onAlternarInadimplencia={alternarInadimplenciaUnidadeBase}
+                  onRemoverUnidade={removerUnidadeBase}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'PAUTAS' && (
+                <AdminPautasSection
+                  config={config}
+                  pautas={pautas}
+                  presencas={presencas}
+                  votos={votos}
+                  onCriarPauta={criarPauta}
+                  onAbrirPauta={abrirPauta}
+                  onEncerrarPauta={encerrarPauta}
+                  onResetarPauta={resetarPauta}
+                  onExcluirPauta={excluirPauta}
+                  onControlarTimer={controlarTimerTelao}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'CONSTRUTORA' && (
+                <AdminConstrutoraSection
+                  presencas={presencas}
+                  inadimplentes={inadimplentes}
+                  pautaAberta={pautaAberta}
+                  votos={votos}
+                  onAdicionarConstrutora={adicionarUnidadesConstrutora}
+                  onRemoverConstrutora={removerUnidadesConstrutora}
+                  onVotarEmLoteConstrutora={votarEmLoteConstrutora}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'INADIMPLENTES' && (
+                <AdminInadimplentesSection
+                  config={config}
+                  inadimplentes={inadimplentes}
+                  presencas={presencas}
+                  onAdicionarInadimplentes={adicionarUnidadesInadimplentes}
+                  onRemoverInadimplentes={removerUnidadesInadimplentes}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'PRESENCAS_CSV' && (
+                <AdminPresencasCsvSection
+                  presencas={presencas}
+                  pautas={pautas}
+                  votos={votos}
+                  onCredenciarManual={credenciarManualMesa}
+                  onAtualizarPresenca={atualizarPresencaMesa}
+                  onRemoverPresenca={removerPresencaMesa}
+                  onNotificar={notificar}
+                />
+              )}
+
+              {abaAtiva === 'AUDITORIA' && (
+                <AdminAuditoriaSection
+                  tituloAssembleia={assembleiaAtual?.titulo || 'Assembleia Geral Milano'}
+                  pautas={pautas}
+                  operacoes={operacoesAuditoria}
+                  votosAuditoria={votosAuditoria}
+                />
+              )}
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

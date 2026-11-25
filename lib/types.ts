@@ -16,7 +16,22 @@ export type StatusAssembleia = 'rascunho' | 'ativa' | 'encerrada';
 
 export type StatusPauta = 'aguardando' | 'aberta' | 'encerrada';
 
-export type OpcaoVoto = 'SIM' | 'NAO' | 'ABSTENCAO';
+export type TipoVotacaoPauta = 'SIM_NAO' | 'MULTIPLA_UNICA' | 'MULTIPLA_VARIAS';
+
+export interface OpcaoPauta {
+  id: string;
+  sigla: string;
+  label: string;
+}
+
+export interface ContagemOpcaoPlacar {
+  id: string;
+  sigla: string;
+  label: string;
+  votos: number;
+}
+
+export type OpcaoVoto = 'SIM' | 'NAO' | 'ABSTENCAO' | 'MULTIPLA';
 
 export type ConexaoRealtimeStatus = 'CONECTANDO' | 'AO_VIVO' | 'RECONECTANDO';
 
@@ -147,6 +162,9 @@ export interface PautaAssembleia {
   titulo: string;
   descricao: string | null;
   escopo: EscopoVotacao;
+  tipo_votacao?: TipoVotacaoPauta;
+  opcoes_json?: OpcaoPauta[];
+  max_escolhas?: number;
   status: StatusPauta;
   rodada?: number;
   version?: number;
@@ -164,6 +182,7 @@ export interface VotoUnidade {
   bloco: number;
   apartamento: number;
   voto: OpcaoVoto;
+  escolhas_json?: string[];
   is_construtora: boolean;
   idempotency_key?: string | null;
   ip_address?: string | null;
@@ -206,12 +225,15 @@ export interface PlacarPublicoRpc {
   pauta_id: string;
   rodada?: number;
   escopo: EscopoVotacao;
+  tipo_votacao?: TipoVotacaoPauta;
   presentes_aptos: number;
   sim: number;
   nao: number;
   nao_votaram: number;
   total_votos: number;
-  vencedor: 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS';
+  vencedor: 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS' | 'MULTIPLA';
+  opcoes_contagem?: ContagemOpcaoPlacar[];
+  vencedores_ids?: string[];
 }
 
 export interface AuditoriaVotoItem {
@@ -259,6 +281,7 @@ export interface GridUnidadeTelaoItem {
   proc: boolean;
   const: boolean;
   voto: OpcaoVoto | null;
+  escolhas?: string[];
 }
 
 export interface TelemetriaDispositivo {
