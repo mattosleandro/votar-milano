@@ -28,6 +28,8 @@ export function getSupabasePublicClient(): SupabaseClient {
         heartbeatIntervalMs: 15000,
       },
     });
+    // Garante que o access_token anon esteja sempre preenchido para canais Broadcast private:true (RLS read-only)
+    publicClient.realtime.setAuth(supabaseAnonKey);
   }
   return publicClient;
 }

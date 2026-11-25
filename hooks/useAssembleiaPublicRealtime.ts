@@ -59,15 +59,39 @@ const DEFAULT_CONTADORES: ContadoresPublicosAssembleia = {
 };
 
 interface RpcEstadoPublicoPayload {
-  ok: boolean;
+  ok?: boolean;
   server_now?: string;
   assembleia: Record<string, unknown> | null;
   pauta_aberta: PautaAssembleia | null;
   ultima_pauta_encerrada: PautaAssembleia | null;
-  pautas: PautaAssembleia[];
+  pautas?: PautaAssembleia[];
   placar: PlacarPublicoRpc | null;
   contadores: ContadoresPublicosAssembleia;
   unidades_grid?: GridUnidadeTelaoItem[];
+}
+
+interface TelaoGridDeltaPayload {
+  op: 'PRESENCA_UPSERT' | 'PRESENCA_DELETE' | 'VOTO_UPSERT' | 'VOTO_DELETE' | 'RELOAD_GRID';
+  assembleia_id?: string;
+  pauta_id?: string;
+  rodada?: number;
+  status?: string;
+  b?: number;
+  a?: number;
+  voto?: OpcaoVoto | null;
+  const?: boolean;
+  unit?: {
+    id: string;
+    b: number;
+    a: number;
+    f: 1 | 2;
+    m: 1 | 2 | 3 | 4;
+    pres: boolean;
+    port: boolean;
+    onl: boolean;
+    proc: boolean;
+    const: boolean;
+  };
 }
 
 function normalizarConfigPublica(raw: Record<string, unknown> | null): AssembleiaConfig {
@@ -121,10 +145,10 @@ function normalizarConfigPublica(raw: Record<string, unknown> | null): Assemblei
 
 /**
  * Hook público 100% sanitizado (Zero PII, Zero postgres_changes em tabelas sensíveis).
- * - Modo 'morador': consome apenas assembleia_estado_publico() (~500B, placar agregado)
- *   + lê apenas os próprios votos via JWT assinado.
- * - Modo 'telao': consome assembleia_telao_snapshot() (estado + grid compacto sem PII e sem limite de 1000 linhas).
- * Na Fase 3 receberá também push via Realtime Broadcast sanitizado.
+ * - Usa Realtime Broadcast Read-Only (private: true, RLS SELECT em realtime.messages):
+ *   1) Canal assembleia:<id>:placar -> placar_update (~1KB, throttle 500ms, entrega ~80ms)
+ *   2) Canal assembleia:<id>:telao_grid (somente /telao) -> grid_delta (~140B, delta incremental)
+ * - Fallback automático para polling leve com jitter caso o WebSocket oscile (Modo Contingência).
  */
 export function useAssembleiaPublicRealtime(
   modo: 'morador' | 'telao' = 'morador',
@@ -143,9 +167,75 @@ export function useAssembleiaPublicRealtime(
   const [carregandoInicial, setCarregandoInicial] = useState(true);
   const [erroConexao, setErroConexao] = useState<string | null>(null);
   const [statusConexao, setStatusConexao] = useState<ConexaoRealtimeStatus>('CONECTANDO');
+  const [realtimeAtivo, setRealtimeAtivo] = useState(false);
 
   const isFetchingRef = useRef(false);
   const lastFetchAtRef = useRef(0);
+  const pautaFocoRef = useRef<{ id: string | null; rodada: number }>({ id: null, rodada: 1 });
+  const moradorJwtRef = useRef<string | null>(moradorJwt ?? null);
+
+  useEffect(() => {
+    moradorJwtRef.current = moradorJwt ?? null;
+  }, [moradorJwt]);
+
+  const carregarMeusVotos = useCallback(async (pautaId: string | null, rodada: number) => {
+    const jwt = moradorJwtRef.current;
+    if (modo !== 'morador' || !jwt || !pautaId) {
+      if (!pautaId) setMeusVotos([]);
+      return;
+    }
+    try {
+      const clientMorador = getSupabaseMoradorClient(jwt);
+      const { data: votosData } = await clientMorador
+        .from('assembleia_votos')
+        .select('id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, updated_at')
+        .eq('pauta_id', pautaId)
+        .eq('rodada', rodada);
+      if (votosData) {
+        setMeusVotos(votosData as VotoUnidade[]);
+      }
+    } catch {
+      // Silencioso; será ressincronizado na próxima atualização
+    }
+  }, [modo]);
+
+  const aplicarEstadoPublico = useCallback(
+    (payload: RpcEstadoPublicoPayload, veioDeBroadcast: boolean) => {
+      if (payload.server_now) {
+        const srvMs = Date.parse(payload.server_now);
+        if (!Number.isNaN(srvMs)) {
+          setServerOffsetMs(srvMs - Date.now());
+        }
+      }
+
+      const novaConfig = normalizarConfigPublica(payload.assembleia);
+      setConfig(novaConfig);
+      setPautaAberta(payload.pauta_aberta ?? null);
+      setUltimaPautaEncerrada(payload.ultima_pauta_encerrada ?? null);
+      if (Array.isArray(payload.pautas)) {
+        setPautas(payload.pautas);
+      }
+      setPlacarRpc(payload.placar ?? null);
+      if (payload.contadores) {
+        setContadores(payload.contadores);
+      }
+      if (modo === 'telao' && Array.isArray(payload.unidades_grid)) {
+        setUnidadesGrid(payload.unidades_grid);
+      }
+
+      const pautaFoco = payload.pauta_aberta ?? payload.ultima_pauta_encerrada;
+      const novoFocoId = pautaFoco?.id ?? null;
+      const novaRodada = pautaFoco?.rodada ?? 1;
+      const mudouPautaOuRodada =
+        pautaFocoRef.current.id !== novoFocoId || pautaFocoRef.current.rodada !== novaRodada;
+      pautaFocoRef.current = { id: novoFocoId, rodada: novaRodada };
+
+      if (modo === 'morador' && moradorJwtRef.current && (!veioDeBroadcast || mudouPautaOuRodada)) {
+        void carregarMeusVotos(novoFocoId, novaRodada);
+      }
+    },
+    [carregarMeusVotos, modo]
+  );
 
   const recarregarTudo = useCallback(
     async (forcar = false) => {
@@ -168,42 +258,7 @@ export function useAssembleiaPublicRealtime(
         if (error) throw error;
 
         const payload = (data ?? {}) as RpcEstadoPublicoPayload;
-
-        if (payload.server_now) {
-          const srvMs = Date.parse(payload.server_now);
-          if (!Number.isNaN(srvMs)) {
-            setServerOffsetMs(srvMs - Date.now());
-          }
-        }
-
-        const novaConfig = normalizarConfigPublica(payload.assembleia);
-        setConfig(novaConfig);
-        setPautaAberta(payload.pauta_aberta ?? null);
-        setUltimaPautaEncerrada(payload.ultima_pauta_encerrada ?? null);
-        setPautas(payload.pautas ?? []);
-        setPlacarRpc(payload.placar ?? null);
-        setContadores(payload.contadores ?? DEFAULT_CONTADORES);
-        if (modo === 'telao') {
-          setUnidadesGrid(payload.unidades_grid ?? []);
-        }
-
-        // No modo morador autenticado via JWT, consulta exclusivamente os próprios votos da rodada vigente (RLS estrito)
-        if (modo === 'morador' && moradorJwt && novaConfig.assembleia_id) {
-          const pautaFoco = payload.pauta_aberta ?? payload.ultima_pauta_encerrada;
-          if (pautaFoco?.id) {
-            const clientMorador = getSupabaseMoradorClient(moradorJwt);
-            const { data: votosData } = await clientMorador
-              .from('assembleia_votos')
-              .select('id, assembleia_id, pauta_id, rodada, bloco, apartamento, voto, is_construtora, updated_at')
-              .eq('pauta_id', pautaFoco.id)
-              .eq('rodada', pautaFoco.rodada ?? 1);
-            if (votosData) {
-              setMeusVotos(votosData as VotoUnidade[]);
-            }
-          } else {
-            setMeusVotos([]);
-          }
-        }
+        aplicarEstadoPublico(payload, false);
 
         setErroConexao(null);
         setStatusConexao('AO_VIVO');
@@ -217,23 +272,162 @@ export function useAssembleiaPublicRealtime(
         setCarregandoInicial(false);
       }
     },
-    [modo, moradorJwt]
+    [aplicarEstadoPublico, modo]
   );
 
+  // Recarrega meusVotos imediatamente quando o morador conclui o login por CPF
+  useEffect(() => {
+    if (modo === 'morador' && moradorJwt) {
+      void carregarMeusVotos(pautaFocoRef.current.id, pautaFocoRef.current.rodada);
+    } else if (modo === 'morador' && !moradorJwt) {
+      setMeusVotos([]);
+    }
+  }, [carregarMeusVotos, modo, moradorJwt]);
+
+  // 1. Assinatura dos Canais Realtime Broadcast Read-Only (private: true, Zero PII)
+  const assembleiaIdAtual = config.assembleia_id ?? null;
+
+  useEffect(() => {
+    if (!assembleiaIdAtual) return;
+
+    const supabase = getSupabasePublicClient();
+    const canalPlacarNome = `assembleia:${assembleiaIdAtual}:placar`;
+
+    const canalPlacar = supabase
+      .channel(canalPlacarNome, {
+        config: {
+          broadcast: { self: false },
+          private: true,
+        },
+      })
+      .on('broadcast', { event: 'placar_update' }, (msg) => {
+        const payload = (msg?.payload ?? null) as RpcEstadoPublicoPayload | null;
+        if (!payload || !payload.assembleia) return;
+        aplicarEstadoPublico(payload, true);
+        setErroConexao(null);
+        setStatusConexao('AO_VIVO');
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeAtivo(true);
+          setStatusConexao('AO_VIVO');
+          setErroConexao(null);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          setRealtimeAtivo(false);
+          setStatusConexao('RECONECTANDO');
+        }
+      });
+
+    let canalTelao: ReturnType<typeof supabase.channel> | null = null;
+    if (modo === 'telao') {
+      const canalTelaoNome = `assembleia:${assembleiaIdAtual}:telao_grid`;
+      canalTelao = supabase
+        .channel(canalTelaoNome, {
+          config: {
+            broadcast: { self: false },
+            private: true,
+          },
+        })
+        .on('broadcast', { event: 'grid_delta' }, (msg) => {
+          const delta = (msg?.payload ?? null) as TelaoGridDeltaPayload | null;
+          if (!delta || !delta.op) return;
+
+          if (delta.op === 'RELOAD_GRID') {
+            const jitter = 120 + Math.floor(Math.random() * 280);
+            window.setTimeout(() => {
+              void recarregarTudo(true);
+            }, jitter);
+            return;
+          }
+
+          if (delta.op === 'PRESENCA_UPSERT' && delta.unit) {
+            const u = delta.unit;
+            setUnidadesGrid((atual) => {
+              const idx = atual.findIndex((item) => item.b === u.b && item.a === u.a);
+              if (idx === -1) {
+                const novo: GridUnidadeTelaoItem = { ...u, voto: null };
+                return [...atual, novo].sort((x, y) => x.b - y.b || x.a - y.a);
+              }
+              const existente = atual[idx];
+              const atualizado: GridUnidadeTelaoItem = { ...u, voto: existente.voto };
+              return atual.map((item, i) => (i === idx ? atualizado : item));
+            });
+            return;
+          }
+
+          if (delta.op === 'PRESENCA_DELETE' && typeof delta.b === 'number' && typeof delta.a === 'number') {
+            setUnidadesGrid((atual) =>
+              atual.filter((item) => !(item.b === delta.b && item.a === delta.a))
+            );
+            return;
+          }
+
+          if (
+            (delta.op === 'VOTO_UPSERT' || delta.op === 'VOTO_DELETE') &&
+            typeof delta.b === 'number' &&
+            typeof delta.a === 'number'
+          ) {
+            // Aplica delta apenas se pertencer à pauta e rodada atualmente em foco
+            if (
+              delta.pauta_id &&
+              pautaFocoRef.current.id &&
+              delta.pauta_id !== pautaFocoRef.current.id
+            ) {
+              return;
+            }
+            if (
+              typeof delta.rodada === 'number' &&
+              delta.rodada !== pautaFocoRef.current.rodada
+            ) {
+              return;
+            }
+
+            const novoVoto = delta.op === 'VOTO_UPSERT' ? (delta.voto ?? null) : null;
+            setUnidadesGrid((atual) =>
+              atual.map((item) =>
+                item.b === delta.b && item.a === delta.a ? { ...item, voto: novoVoto } : item
+              )
+            );
+          }
+        })
+        .subscribe();
+    }
+
+    return () => {
+      setRealtimeAtivo(false);
+      void supabase.removeChannel(canalPlacar);
+      if (canalTelao) {
+        void supabase.removeChannel(canalTelao);
+      }
+    };
+  }, [aplicarEstadoPublico, assembleiaIdAtual, modo, recarregarTudo]);
+
+  // 2. Carga Inicial + Polling de Contingência/Sanidade (25-35s com WS ativo; 4-7s se WS cair)
   useEffect(() => {
     void recarregarTudo(true);
     if (modo === 'morador') {
       void coletarTelemetriaDispositivo();
     }
 
-    // Polling leve com jitter como ponte segura (Zero PII no Realtime) até Broadcast na Fase 3
     let timeoutId: number | null = null;
     let ativo = true;
 
     const agendarProximo = () => {
       if (!ativo) return;
-      const baseMs = modo === 'telao' ? 2000 : 3000;
-      const jitterMs = Math.floor(Math.random() * 1000);
+      // Com WebSocket saudável e assembleia ativa: apenas check de sanidade a cada 25-35s (>90% menos reqs!)
+      // Com assembleia encerrada (aguardando criação de nova): 8-12s para descobrir novo UUID
+      // Em contingência (WebSocket desconectado): 4-7s para manter operação contínua
+      let baseMs = 25000;
+      let jitterRange = 10000;
+      if (!realtimeAtivo) {
+        baseMs = modo === 'telao' ? 4000 : 5000;
+        jitterRange = 2000;
+      } else if (!config.assembleia_ativa) {
+        baseMs = 8000;
+        jitterRange = 4000;
+      }
+
+      const jitterMs = Math.floor(Math.random() * jitterRange);
       timeoutId = window.setTimeout(() => {
         if (document.visibilityState === 'visible') {
           void recarregarTudo(false).finally(agendarProximo);
@@ -247,7 +441,7 @@ export function useAssembleiaPublicRealtime(
 
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible') {
-        const jitter = Math.floor(Math.random() * 900);
+        const jitter = Math.floor(Math.random() * 1400);
         window.setTimeout(() => {
           void recarregarTudo(false);
         }, jitter);
@@ -263,9 +457,9 @@ export function useAssembleiaPublicRealtime(
       document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       window.removeEventListener('online', handleVisibilityOrOnline);
     };
-  }, [modo, recarregarTudo]);
+  }, [config.assembleia_ativa, modo, realtimeAtivo, recarregarTudo]);
 
-  // Projeção sanitizada de presenças e votos derivada do grid do /telao (para compatibilidade dos cálculos)
+  // Projeção sanitizada de presenças e votos derivada do grid do /telao
   const presencas: PresencaPublica[] = useMemo(() => {
     if (modo !== 'telao') return [];
     return unidadesGrid.map((u) => ({
@@ -284,19 +478,22 @@ export function useAssembleiaPublicRealtime(
 
   const votos: VotoUnidade[] = useMemo(() => {
     if (modo === 'morador') return meusVotos;
-    const pautaFocoId = pautaAberta?.id ?? ultimaPautaEncerrada?.id ?? '';
+    const pautaFoco = pautaAberta ?? ultimaPautaEncerrada;
+    const pautaFocoId = pautaFoco?.id ?? '';
+    const rodadaFoco = pautaFoco?.rodada ?? 1;
     return unidadesGrid
       .filter((u) => u.voto !== null)
       .map((u) => ({
-        id: `${pautaFocoId}-${u.b}-${u.a}`,
+        id: `${pautaFocoId}-${rodadaFoco}-${u.b}-${u.a}`,
         pauta_id: pautaFocoId,
+        rodada: rodadaFoco,
         bloco: u.b,
         apartamento: u.a,
         voto: u.voto as OpcaoVoto,
         is_construtora: u.const,
         updated_at: '',
       }));
-  }, [meusVotos, modo, pautaAberta?.id, ultimaPautaEncerrada?.id, unidadesGrid]);
+  }, [meusVotos, modo, pautaAberta, ultimaPautaEncerrada, unidadesGrid]);
 
   /** Registra voto exclusivamente via RPC autenticada por JWT do morador com chave de idempotência */
   const registrarVotoUnidade = useCallback(
@@ -365,10 +562,13 @@ export function useAssembleiaPublicRealtime(
         return atual.map((v, i) => (i === idx ? novoVoto : v));
       });
 
-      void recarregarTudo(true);
+      // Com Broadcast ativo, o placar já chega via WebSocket em ~80-500ms; força reload só se WS estiver off
+      if (!realtimeAtivo) {
+        void recarregarTudo(true);
+      }
       return { ok: true, jaIgual: Boolean(res.ja_igual) };
     },
-    [pautaAberta?.rodada, recarregarTudo]
+    [pautaAberta?.rodada, realtimeAtivo, recarregarTudo]
   );
 
   return {
@@ -383,6 +583,7 @@ export function useAssembleiaPublicRealtime(
     pautaAberta,
     ultimaPautaEncerrada,
     serverOffsetMs,
+    realtimeAtivo,
     carregandoInicial,
     erroConexao,
     statusConexao,
