@@ -591,6 +591,7 @@ export function obterOpcoesPauta(
       id: o.id,
       sigla: o.sigla || String.fromCharCode(65 + idx),
       label: o.label,
+      image_url: typeof o.image_url === 'string' && o.image_url.trim() ? o.image_url.trim() : null,
     }));
 }
 
@@ -758,6 +759,7 @@ export function converterPlacarRpcParaPlacarPauta(placar: PlacarPublicoRpc): Pla
       id: o.id,
       sigla: o.sigla,
       label: o.label,
+      image_url: typeof o.image_url === 'string' && o.image_url.trim() ? o.image_url.trim() : null,
       votos: v,
       pctVotantes: totalVotosRegistrados > 0 ? (v / divisorValidos) * 100 : 0,
       pctPresentes: presentesAptos > 0 ? (v / divisorPresentes) * 100 : 0,

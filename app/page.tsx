@@ -23,6 +23,8 @@ import {
   Vibrate,
   Wifi,
   WifiOff,
+  X,
+  ZoomIn,
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
 import { useAssembleiaPublicRealtime } from '@/hooks/useAssembleiaPublicRealtime';
@@ -135,6 +137,9 @@ export default function PaginaMorador() {
   // Estado de votação (SIM/NÃO e Múltipla Escolha)
   const [enviandoVoto, setEnviandoVoto] = useState<string | null>(null);
   const [selecaoMultipla, setSelecaoMultipla] = useState<string[]>([]);
+  const [imagemAmpliada, setImagemAmpliada] = useState<{ url: string; titulo: string } | null>(
+    null
+  );
   const [erroVoto, setErroVoto] = useState<string | null>(null);
   const [feedbackVoto, setFeedbackVoto] = useState<string | null>(null);
   const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
@@ -1539,41 +1544,70 @@ export default function PaginaMorador() {
                               const enviandoEsta = enviandoVoto === opt.id;
 
                               return (
-                                <button
+                                <div
                                   key={opt.id}
-                                  type="button"
-                                  disabled={
-                                    enviandoVoto !== null || tempoVotacaoEsgotado || selecionada
-                                  }
-                                  onClick={() => void handleVotarMultipla([opt.id])}
-                                  className={`w-full min-h-[64px] rounded-2xl px-4 py-3 text-left transition flex items-center justify-between gap-3 border-2 overflow-hidden disabled:cursor-default ${
+                                  className={`rounded-2xl border-2 overflow-hidden transition ${
                                     selecionada
                                       ? `${paleta.cardSelected} shadow-md`
-                                      : `${paleta.cardLight} hover:brightness-95 disabled:opacity-60`
+                                      : `${paleta.cardLight}`
                                   }`}
                                 >
-                                  <div className="flex items-center gap-3 min-w-0">
-                                    <span
-                                      className={`w-8 h-8 rounded-xl font-mono text-sm font-black flex items-center justify-center shrink-0 ${
-                                        selecionada
-                                          ? 'bg-white/20 text-white'
-                                          : 'bg-[#0C0C0D] text-milano-gold'
-                                      }`}
-                                    >
-                                      {opt.sigla}
-                                    </span>
-                                    <span className="text-sm font-extrabold leading-snug break-words">
-                                      {enviandoEsta ? 'Registrando voto...' : opt.label}
-                                    </span>
-                                  </div>
-
-                                  {selecionada ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-black uppercase text-white shrink-0 whitespace-nowrap">
-                                      <Check className="w-3 h-3" />
-                                      Confirmado
-                                    </span>
+                                  {opt.image_url ? (
+                                    <div className="relative bg-slate-900/10 border-b border-black/10">
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                                      <img
+                                        src={opt.image_url}
+                                        alt={`Opção ${opt.sigla}: ${opt.label}`}
+                                        loading="lazy"
+                                        className="h-44 sm:h-48 w-full object-cover"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setImagemAmpliada({
+                                            url: opt.image_url!,
+                                            titulo: `Opção ${opt.sigla} — ${opt.label}`,
+                                          })
+                                        }
+                                        className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-[#0C0C0D]/80 px-2.5 py-1 text-[11px] font-bold text-white shadow hover:bg-[#0C0C0D]"
+                                      >
+                                        <ZoomIn className="w-3.5 h-3.5 text-milano-gold" />
+                                        Ampliar
+                                      </button>
+                                    </div>
                                   ) : null}
-                                </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      enviandoVoto !== null || tempoVotacaoEsgotado || selecionada
+                                    }
+                                    onClick={() => void handleVotarMultipla([opt.id])}
+                                    className="w-full min-h-[64px] px-4 py-3 text-left transition flex items-center justify-between gap-3 hover:brightness-95 disabled:cursor-default disabled:opacity-75"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <span
+                                        className={`w-8 h-8 rounded-xl font-mono text-sm font-black flex items-center justify-center shrink-0 ${
+                                          selecionada
+                                            ? 'bg-white/20 text-white'
+                                            : 'bg-[#0C0C0D] text-milano-gold'
+                                        }`}
+                                      >
+                                        {opt.sigla}
+                                      </span>
+                                      <span className="text-sm font-extrabold leading-snug break-words">
+                                        {enviandoEsta ? 'Registrando voto...' : opt.label}
+                                      </span>
+                                    </div>
+
+                                    {selecionada ? (
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2.5 py-1 text-[10px] font-black uppercase text-white shrink-0 whitespace-nowrap">
+                                        <Check className="w-3 h-3" />
+                                        Confirmado
+                                      </span>
+                                    ) : null}
+                                  </button>
+                                </div>
                               );
                             })}
                           </div>
@@ -1598,7 +1632,7 @@ export default function PaginaMorador() {
                               ) : null}
                             </div>
 
-                            <div className="space-y-2">
+                            <div className="space-y-2.5">
                               {opcoesPautaAberta.map((opt, idx) => {
                                 const paleta = obterPaletaOpcaoMultipla(idx);
                                 const marcada = selecaoMultipla.includes(opt.id);
@@ -1607,47 +1641,76 @@ export default function PaginaMorador() {
                                   minhasEscolhasConfirmadas.includes(opt.id);
 
                                 return (
-                                  <button
+                                  <div
                                     key={opt.id}
-                                    type="button"
-                                    disabled={enviandoVoto !== null || tempoVotacaoEsgotado}
-                                    onClick={() => alternarOpcaoMultiplaVarias(opt.id)}
-                                    className={`w-full min-h-[60px] rounded-2xl px-4 py-3 text-left transition flex items-center justify-between gap-3 border-2 overflow-hidden disabled:opacity-60 ${
+                                    className={`rounded-2xl border-2 overflow-hidden transition ${
                                       marcada
                                         ? `${paleta.cardSelected} shadow-md`
-                                        : 'bg-slate-50 border-slate-300 text-slate-900 hover:border-slate-400'
+                                        : 'bg-slate-50 border-slate-300 text-slate-900'
                                     }`}
                                   >
-                                    <div className="flex items-center gap-3 min-w-0">
-                                      <span
-                                        className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 ${
-                                          marcada
-                                            ? 'bg-white text-slate-950 border-white'
-                                            : 'bg-white border-slate-400'
-                                        }`}
-                                      >
-                                        {marcada ? <Check className="w-4 h-4 stroke-[3]" /> : null}
-                                      </span>
-                                      <span
-                                        className={`px-2 py-0.5 rounded-md font-mono text-xs font-black shrink-0 ${
-                                          marcada
-                                            ? 'bg-white/20 text-white'
-                                            : 'bg-[#0C0C0D] text-milano-gold'
-                                        }`}
-                                      >
-                                        {opt.sigla}
-                                      </span>
-                                      <span className="text-sm font-extrabold leading-snug break-words">
-                                        {opt.label}
-                                      </span>
-                                    </div>
-
-                                    {confirmadaNoBanco ? (
-                                      <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase shrink-0 whitespace-nowrap">
-                                        Salvo
-                                      </span>
+                                    {opt.image_url ? (
+                                      <div className="relative bg-slate-900/10 border-b border-black/10">
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                          src={opt.image_url}
+                                          alt={`Opção ${opt.sigla}: ${opt.label}`}
+                                          loading="lazy"
+                                          className="h-44 sm:h-48 w-full object-cover"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setImagemAmpliada({
+                                              url: opt.image_url!,
+                                              titulo: `Opção ${opt.sigla} — ${opt.label}`,
+                                            })
+                                          }
+                                          className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-[#0C0C0D]/80 px-2.5 py-1 text-[11px] font-bold text-white shadow hover:bg-[#0C0C0D]"
+                                        >
+                                          <ZoomIn className="w-3.5 h-3.5 text-milano-gold" />
+                                          Ampliar
+                                        </button>
+                                      </div>
                                     ) : null}
-                                  </button>
+
+                                    <button
+                                      type="button"
+                                      disabled={enviandoVoto !== null || tempoVotacaoEsgotado}
+                                      onClick={() => alternarOpcaoMultiplaVarias(opt.id)}
+                                      className="w-full min-h-[60px] px-4 py-3 text-left transition flex items-center justify-between gap-3 disabled:opacity-60"
+                                    >
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        <span
+                                          className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 ${
+                                            marcada
+                                              ? 'bg-white text-slate-950 border-white'
+                                              : 'bg-white border-slate-400'
+                                          }`}
+                                        >
+                                          {marcada ? <Check className="w-4 h-4 stroke-[3]" /> : null}
+                                        </span>
+                                        <span
+                                          className={`px-2 py-0.5 rounded-md font-mono text-xs font-black shrink-0 ${
+                                            marcada
+                                              ? 'bg-white/20 text-white'
+                                              : 'bg-[#0C0C0D] text-milano-gold'
+                                          }`}
+                                        >
+                                          {opt.sigla}
+                                        </span>
+                                        <span className="text-sm font-extrabold leading-snug break-words">
+                                          {opt.label}
+                                        </span>
+                                      </div>
+
+                                      {confirmadaNoBanco ? (
+                                        <span className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-black uppercase shrink-0 whitespace-nowrap">
+                                          Salvo
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                  </div>
                                 );
                               })}
                             </div>
@@ -1794,6 +1857,26 @@ export default function PaginaMorador() {
                           >
                             <div className="flex items-center justify-between gap-2 text-xs font-bold">
                               <span className="flex items-center gap-2 min-w-0">
+                                {opt.image_url ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setImagemAmpliada({
+                                        url: opt.image_url!,
+                                        titulo: `Opção ${opt.sigla} — ${opt.label}`,
+                                      })
+                                    }
+                                    className="shrink-0 overflow-hidden rounded-lg border border-black/15"
+                                    title="Toque para ampliar imagem"
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={opt.image_url}
+                                      alt={opt.label}
+                                      className="h-10 w-10 object-cover"
+                                    />
+                                  </button>
+                                ) : null}
                                 <span
                                   className={`px-1.5 py-0.5 rounded font-mono text-[11px] font-black shrink-0 ${
                                     venceu
@@ -1936,6 +2019,38 @@ export default function PaginaMorador() {
           )}
         </section>
       </main>
+
+      {/* Modal Lightbox de Zoom da Imagem da Opção */}
+      {imagemAmpliada ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm p-4 flex flex-col items-center justify-center gap-3"
+          onClick={() => setImagemAmpliada(null)}
+        >
+          <div
+            className="w-full max-w-2xl flex items-center justify-between gap-3 text-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-sm font-extrabold truncate">{imagemAmpliada.titulo}</p>
+            <button
+              type="button"
+              onClick={() => setImagemAmpliada(null)}
+              className="inline-flex items-center gap-1 rounded-full bg-white/15 px-3 py-1.5 text-xs font-bold text-white hover:bg-white/25 shrink-0"
+            >
+              <X className="w-4 h-4" />
+              Fechar
+            </button>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imagemAmpliada.url}
+            alt={imagemAmpliada.titulo}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[80vh] max-w-full rounded-2xl object-contain shadow-2xl border border-white/15"
+          />
+        </div>
+      ) : null}
 
       <footer className="py-4 text-center text-[11px] text-slate-500 border-t border-slate-200/70 bg-white/60">
         <div className="max-w-xl mx-auto px-4 flex items-center justify-between">

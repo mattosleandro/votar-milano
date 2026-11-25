@@ -10,12 +10,14 @@ import {
   LayoutGrid,
   Maximize2,
   Minimize2,
+  QrCode,
   Search,
   ShieldAlert,
   Users,
   Wifi,
   WifiOff,
   X,
+  ZoomIn,
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
 import {
@@ -29,6 +31,7 @@ import {
   TelaoRelogioConvocacao,
   TelaoTimerVotacao,
 } from '@/components/telao/TelaoClockWidgets';
+import { TelaoQrCodeOverlay } from '@/components/telao/TelaoQrCodeOverlay';
 import { useAssembleiaPublicRealtime } from '@/hooks/useAssembleiaPublicRealtime';
 import {
   calcularPlacarPauta,
@@ -97,6 +100,11 @@ export default function PaginaTelao() {
   const [filtroModulo, setFiltroModulo] = useState<FiltroModuloTelao>('TODOS');
   const [buscaUnidade, setBuscaUnidade] = useState('');
   const [painelMaximizado, setPainelMaximizado] = useState(false);
+  const [qrTelaCheia, setQrTelaCheia] = useState(false);
+  const [imagemAmpliadaTelao, setImagemAmpliadaTelao] = useState<{
+    url: string;
+    titulo: string;
+  } | null>(null);
   const [timerEsgotado, setTimerEsgotado] = useState(false);
 
   // Screen Wake Lock API: mantém a tela do notebook/datashow sempre acesa durante a assembleia
@@ -386,12 +394,17 @@ export default function PaginaTelao() {
               serverOffsetMs={serverOffsetMs}
             />
 
-            {/* QR Code de Alta Nitidez para Projeção */}
-            <div className="rounded-2xl bg-slate-900/90 border border-milano-gold/35 p-2.5 2xl:p-3.5 text-center space-y-1.5 shadow-lg flex flex-col items-center justify-center">
+            {/* QR Code Clicável -> Expande em Tela Cheia com Dados de Entrada */}
+            <button
+              type="button"
+              onClick={() => setQrTelaCheia(true)}
+              title="Clique para abrir o QR Code em tela cheia com o status de entrada"
+              className="group rounded-2xl bg-slate-900/90 border border-milano-gold/35 hover:border-milano-gold hover:bg-slate-900 p-2.5 2xl:p-3.5 text-center space-y-1.5 shadow-lg flex flex-col items-center justify-center transition cursor-pointer w-full"
+            >
               <p className="text-[10px] 2xl:text-xs font-bold uppercase tracking-widest text-milano-gold-light">
                 Aponte a Câmera para Validar e Votar
               </p>
-              <div className="bg-white p-2 rounded-xl inline-flex items-center justify-center shadow-inner">
+              <div className="bg-white p-2 rounded-xl inline-flex items-center justify-center shadow-inner transition group-hover:scale-[1.03]">
                 <QRCodeSVG
                   value={APP_PUBLIC_URL}
                   size={124}
@@ -410,7 +423,11 @@ export default function PaginaTelao() {
               <p className="text-xs 2xl:text-sm font-extrabold font-mono text-milano-gold tracking-tight">
                 {dominioLegivel}
               </p>
-            </div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-milano-gold/15 border border-milano-gold/40 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-milano-gold-light group-hover:bg-milano-gold group-hover:text-[#0C0C0D] transition">
+                <Maximize2 className="w-2.5 h-2.5" />
+                Clique para ampliar QR Code
+              </span>
+            </button>
 
             {/* Status das Convocações & Quórum */}
             <div className="rounded-xl bg-slate-900/75 border border-slate-800 p-3 space-y-2 flex flex-col justify-center">
@@ -840,6 +857,18 @@ export default function PaginaTelao() {
                 </span>
               )}
 
+              {painelMaximizado && (
+                <button
+                  type="button"
+                  onClick={() => setQrTelaCheia(true)}
+                  title="Exibir QR Code em tela cheia"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-extrabold uppercase tracking-wide border border-milano-gold/50 bg-slate-900 text-milano-gold hover:bg-slate-800 transition shadow-sm"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>QR Code</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={alternarMaximizarPainel}
@@ -1044,12 +1073,36 @@ export default function PaginaTelao() {
                         return (
                           <div
                             key={opt.id}
-                            className={`rounded-2xl p-4 border-2 flex flex-col justify-between gap-2 ${
+                            className={`rounded-2xl p-4 border-2 flex flex-col justify-between gap-3 overflow-hidden ${
                               venceu
                                 ? 'bg-slate-800 border-milano-gold ring-2 ring-milano-gold/40'
                                 : 'bg-slate-950/70 border-slate-800'
                             }`}
                           >
+                            {opt.image_url ? (
+                              <div className="relative -mx-4 -mt-4 mb-1 bg-slate-900 border-b border-slate-800">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={opt.image_url}
+                                  alt={`Opção ${opt.sigla}: ${opt.label}`}
+                                  className="h-36 2xl:h-44 w-full object-cover"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setImagemAmpliadaTelao({
+                                      url: opt.image_url!,
+                                      titulo: `Opção ${opt.sigla} — ${opt.label}`,
+                                    })
+                                  }
+                                  className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-[#0C0C0D]/80 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#0C0C0D]"
+                                >
+                                  <ZoomIn className="w-3.5 h-3.5 text-milano-gold" />
+                                  Ampliar
+                                </button>
+                              </div>
+                            ) : null}
+
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex items-center gap-2.5 min-w-0">
                                 <span
@@ -1215,6 +1268,59 @@ export default function PaginaTelao() {
           )}
         </section>
       </main>
+
+      {/* Modo QR Code Tela Cheia (clicando no QR Code na lateral) */}
+      {qrTelaCheia ? (
+        <TelaoQrCodeOverlay
+          appUrl={APP_PUBLIC_URL}
+          dominioLegivel={dominioLegivel}
+          convocacaoAtiva={config.convocacao_ativa}
+          horarioPrimeira={config.horario_primeira_convocacao}
+          horarioSegunda={config.horario_segunda_convocacao}
+          serverOffsetMs={serverOffsetMs}
+          statusConexao={statusConexao}
+          realtimeAtivo={realtimeAtivo}
+          confirmadosPortaria={contadoresPresenca.confirmadosPortaria}
+          conectadosOnline={contadoresPresenca.conectadosOnline}
+          totalPresentes={contadoresPresenca.total}
+          totalEscopo={metaEscopo.totalUnidades}
+          comProcuracao={contadoresPresenca.comProcuracao}
+          totalInadimplentes={config.total_inadimplentes}
+          onFechar={() => setQrTelaCheia(false)}
+        />
+      ) : null}
+
+      {/* Modal Lightbox de Imagem de Opção no Telão */}
+      {imagemAmpliadaTelao ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm p-6 flex flex-col items-center justify-center gap-4"
+          onClick={() => setImagemAmpliadaTelao(null)}
+        >
+          <div
+            className="w-full max-w-5xl flex items-center justify-between gap-4 text-white"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-lg font-extrabold truncate">{imagemAmpliadaTelao.titulo}</p>
+            <button
+              type="button"
+              onClick={() => setImagemAmpliadaTelao(null)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-milano-gold px-4 py-2 text-xs font-black uppercase text-[#0C0C0D]"
+            >
+              <X className="w-4 h-4" />
+              Fechar
+            </button>
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imagemAmpliadaTelao.url}
+            alt={imagemAmpliadaTelao.titulo}
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[82vh] max-w-full rounded-2xl object-contain shadow-2xl border border-milano-gold/40"
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

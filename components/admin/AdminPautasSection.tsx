@@ -6,6 +6,8 @@ import {
   CheckSquare,
   CircleDot,
   Download,
+  ImagePlus,
+  Loader2,
   Lock,
   Pause,
   Play,
@@ -29,6 +31,7 @@ import {
   obterTipoVotacaoPauta,
 } from '@/lib/condominio';
 import { exportarAuditoriaVotosCsv } from '@/lib/csv';
+import { fazerUploadImagemOpcaoPauta } from '@/lib/uploadOpcaoImagem';
 import {
   AssembleiaConfig,
   EscopoVotacao,
@@ -38,6 +41,11 @@ import {
   VotoUnidade,
 } from '@/lib/types';
 import { ResultadoOperacaoAdmin } from '@/hooks/useAssembleiaAdminRealtime';
+
+interface OpcaoRascunhoForm {
+  label: string;
+  image_url: string | null;
+}
 
 interface AdminPautasSectionProps {
   config: AssembleiaConfig;
@@ -49,7 +57,7 @@ interface AdminPautasSectionProps {
     descricao: string;
     escopo: EscopoVotacao;
     tipo_votacao?: TipoVotacaoPauta;
-    opcoes?: string[];
+    opcoes?: { label: string; image_url?: string | null }[];
     max_escolhas?: number;
   }) => Promise<ResultadoOperacaoAdmin>;
   onAbrirPauta: (pautaId: string) => Promise<ResultadoOperacaoAdmin>;
@@ -84,7 +92,11 @@ export function AdminPautasSection({
   const [descricao, setDescricao] = useState('');
   const [escopo, setEscopo] = useState<EscopoVotacao>(config.escopo_assembleia || 'TODOS');
   const [tipoVotacao, setTipoVotacao] = useState<TipoVotacaoPauta>('SIM_NAO');
-  const [opcoesTexto, setOpcoesTexto] = useState<string[]>(['', '']);
+  const [opcoesRascunho, setOpcoesRascunho] = useState<OpcaoRascunhoForm[]>([
+    { label: '', image_url: null },
+    { label: '', image_url: null },
+  ]);
+  const [enviandoImagemIdx, setEnviandoImagemIdx] = useState<number | null>(null);
   const [maxEscolhas, setMaxEscolhas] = useState<number>(2);
   const [criando, setCriando] = useState(false);
 
@@ -127,9 +139,11 @@ export function AdminPautasSection({
 
   const handleSubmitNovaPauta = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (criando) return;
+    if (criando || enviandoImagemIdx !== null) return;
     setCriando(true);
-    const opcoesLimpas = opcoesTexto.map((o) => o.trim()).filter(Boolean);
+    const opcoesLimpas = opcoesRascunho
+      .map((o) => ({ label: o.label.trim(), image_url: o.image_url }))
+      .filter((o) => o.label.length > 0);
     const res = await onCriarPauta({
       titulo,
       descricao,
@@ -147,22 +161,43 @@ export function AdminPautasSection({
       setTitulo('');
       setDescricao('');
       setTipoVotacao('SIM_NAO');
-      setOpcoesTexto(['', '']);
+      setOpcoesRascunho([
+        { label: '', image_url: null },
+        { label: '', image_url: null },
+      ]);
       setMaxEscolhas(2);
     }
   };
 
   const adicionarOpcaoCampo = () => {
-    if (opcoesTexto.length >= 10) return;
-    setOpcoesTexto((atual) => [...atual, '']);
+    if (opcoesRascunho.length >= 10) return;
+    setOpcoesRascunho((atual) => [...atual, { label: '', image_url: null }]);
   };
 
   const removerOpcaoCampo = (idx: number) => {
-    if (opcoesTexto.length <= 2) return;
-    setOpcoesTexto((atual) => {
+    if (opcoesRascunho.length <= 2) return;
+    setOpcoesRascunho((atual) => {
       const nova = atual.filter((_, i) => i !== idx);
       setMaxEscolhas((m) => Math.min(m, nova.length));
       return nova;
+    });
+  };
+
+  const handleUploadImagemOpcao = async (idx: number, file: File | null) => {
+    if (!file) return;
+    setEnviandoImagemIdx(idx);
+    const res = await fazerUploadImagemOpcaoPauta(file, config.assembleia_id);
+    setEnviandoImagemIdx(null);
+    if (!res.ok) {
+      onNotificar({ ok: false, mensagem: res.erro });
+      return;
+    }
+    setOpcoesRascunho((atual) =>
+      atual.map((item, i) => (i === idx ? { ...item, image_url: res.url } : item))
+    );
+    onNotificar({
+      ok: true,
+      mensagem: `Imagem anexada à Opção ${String.fromCharCode(65 + idx)} com sucesso!`,
     });
   };
 
@@ -324,10 +359,11 @@ export function AdminPautasSection({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-xs font-extrabold uppercase tracking-wider text-slate-800">
-                    Alternativas da Votação ({opcoesTexto.length} / 10)
+                    Alternativas da Votação ({opcoesRascunho.length} / 10)
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Cadastre entre 2 e 10 opções claras (ex.: Chapa 1, Empresa A, Horário 19h...).
+                    Cadastre entre 2 e 10 opções com texto e, se desejar, adicione uma{' '}
+                    <strong>imagem ilustrativa</strong> (otimizada automaticamente para 4G/5G).
                   </p>
                 </div>
 
@@ -341,63 +377,147 @@ export function AdminPautasSection({
                     </label>
                     <select
                       id="pauta-max-escolhas"
-                      value={Math.min(maxEscolhas, opcoesTexto.length)}
+                      value={Math.min(maxEscolhas, opcoesRascunho.length)}
                       onChange={(e) => setMaxEscolhas(Number(e.target.value))}
                       className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 font-mono text-xs font-black text-slate-900"
                     >
-                      {Array.from({ length: Math.max(1, opcoesTexto.length - 1) }, (_, i) => i + 2).map(
-                        (num) => (
-                          <option key={num} value={num}>
-                            Até {num} {num === opcoesTexto.length ? '(todas)' : 'opções'}
-                          </option>
-                        )
-                      )}
+                      {Array.from(
+                        { length: Math.max(1, opcoesRascunho.length - 1) },
+                        (_, i) => i + 2
+                      ).map((num) => (
+                        <option key={num} value={num}>
+                          Até {num} {num === opcoesRascunho.length ? '(todas)' : 'opções'}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {opcoesTexto.map((val, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0C0C0D] font-mono text-xs font-black text-[#CCB285]">
-                      {String.fromCharCode(65 + idx)}
-                    </span>
-                    <input
-                      type="text"
-                      required
-                      value={val}
-                      onChange={(e) => {
-                        const novoValor = e.target.value;
-                        setOpcoesTexto((atual) =>
-                          atual.map((item, i) => (i === idx ? novoValor : item))
-                        );
-                      }}
-                      placeholder={`Texto da opção ${String.fromCharCode(65 + idx)}`}
-                      className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/40"
-                    />
-                    {opcoesTexto.length > 2 && (
-                      <button
-                        type="button"
-                        onClick={() => removerOpcaoCampo(idx)}
-                        aria-label={`Remover opção ${String.fromCharCode(65 + idx)}`}
-                        className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                ))}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {opcoesRascunho.map((opt, idx) => {
+                  const letra = String.fromCharCode(65 + idx);
+                  const subindoEsta = enviandoImagemIdx === idx;
+                  return (
+                    <div
+                      key={idx}
+                      className="rounded-xl border border-slate-200 bg-white p-3 space-y-2.5 shadow-sm"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0C0C0D] font-mono text-xs font-black text-[#CCB285]">
+                          {letra}
+                        </span>
+                        <input
+                          type="text"
+                          required
+                          value={opt.label}
+                          onChange={(e) => {
+                            const novoValor = e.target.value;
+                            setOpcoesRascunho((atual) =>
+                              atual.map((item, i) =>
+                                i === idx ? { ...item, label: novoValor } : item
+                              )
+                            );
+                          }}
+                          placeholder={`Texto da opção ${letra}`}
+                          className="flex-1 min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/40"
+                        />
+                        {opcoesRascunho.length > 2 && (
+                          <button
+                            type="button"
+                            onClick={() => removerOpcaoCampo(idx)}
+                            aria-label={`Remover opção ${letra}`}
+                            className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 shrink-0"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Upload / Preview de Imagem da Opção */}
+                      {opt.image_url ? (
+                        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={opt.image_url}
+                            alt={`Prévia Opção ${letra}`}
+                            className="h-32 w-full object-cover"
+                          />
+                          <div className="absolute right-2 top-2 flex items-center gap-1.5">
+                            <label className="cursor-pointer rounded-lg bg-[#0C0C0D]/85 px-2.5 py-1 text-[11px] font-bold text-[#CCB285] shadow hover:bg-[#0C0C0D]">
+                              Trocar
+                              <input
+                                type="file"
+                                accept="image/jpeg,image/png,image/webp,image/gif"
+                                className="hidden"
+                                disabled={enviandoImagemIdx !== null}
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0] ?? null;
+                                  e.target.value = '';
+                                  void handleUploadImagemOpcao(idx, f);
+                                }}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setOpcoesRascunho((atual) =>
+                                  atual.map((item, i) =>
+                                    i === idx ? { ...item, image_url: null } : item
+                                  )
+                                )
+                              }
+                              className="rounded-lg bg-rose-600/90 px-2 py-1 text-[11px] font-bold text-white shadow hover:bg-rose-700"
+                            >
+                              Remover
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label
+                          className={`flex items-center justify-center gap-2 rounded-lg border border-dashed px-3 py-2 text-xs font-bold transition ${
+                            subindoEsta
+                              ? 'border-[#CCB285] bg-amber-50 text-amber-900 cursor-wait'
+                              : 'border-slate-300 bg-slate-50 text-slate-600 hover:border-[#0C0C0D] hover:bg-slate-100 hover:text-slate-900 cursor-pointer'
+                          }`}
+                        >
+                          {subindoEsta ? (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              Otimizando e enviando imagem...
+                            </>
+                          ) : (
+                            <>
+                              <ImagePlus className="h-3.5 w-3.5 text-[#A88E61]" />
+                              Adicionar imagem à Opção {letra} (opcional)
+                            </>
+                          )}
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/gif"
+                            className="hidden"
+                            disabled={enviandoImagemIdx !== null}
+                            onChange={(e) => {
+                              const f = e.target.files?.[0] ?? null;
+                              e.target.value = '';
+                              void handleUploadImagemOpcao(idx, f);
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
-              {opcoesTexto.length < 10 && (
+              {opcoesRascunho.length < 10 && (
                 <button
                   type="button"
                   onClick={adicionarOpcaoCampo}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-slate-400 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:border-[#0C0C0D] hover:text-slate-950"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Adicionar Opção {String.fromCharCode(65 + opcoesTexto.length)}
+                  Adicionar Opção {String.fromCharCode(65 + opcoesRascunho.length)}
                 </button>
               )}
             </div>
@@ -668,6 +788,14 @@ export function AdminPautasSection({
                               >
                                 <div className="flex items-center justify-between gap-2 text-xs font-bold">
                                   <span className="flex items-center gap-2 min-w-0">
+                                    {opt.image_url ? (
+                                      /* eslint-disable-next-line @next/next/no-img-element */
+                                      <img
+                                        src={opt.image_url}
+                                        alt={opt.label}
+                                        className="h-10 w-10 rounded-lg object-cover border border-black/10 shrink-0"
+                                      />
+                                    ) : null}
                                     <span
                                       className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-black shrink-0 ${
                                         venceu

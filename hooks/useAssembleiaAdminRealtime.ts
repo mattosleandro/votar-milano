@@ -722,7 +722,7 @@ export function useAssembleiaAdminRealtime(
       descricao: string;
       escopo: EscopoVotacao;
       tipo_votacao?: TipoVotacaoPauta;
-      opcoes?: string[];
+      opcoes?: { label: string; image_url?: string | null }[];
       max_escolhas?: number;
     }): Promise<ResultadoOperacaoAdmin> => {
       if (!assembleiaAtual || assembleiaAtual.status === 'encerrada') {
@@ -742,8 +742,11 @@ export function useAssembleiaAdminRealtime(
 
       if (tipoVotacao !== 'SIM_NAO') {
         const limpas = (params.opcoes ?? [])
-          .map((t) => t.trim())
-          .filter((t) => t.length > 0);
+          .map((o) => ({
+            label: o.label.trim(),
+            image_url: o.image_url?.trim() || null,
+          }))
+          .filter((o) => o.label.length > 0);
         if (limpas.length < 2) {
           return {
             ok: false,
@@ -756,10 +759,11 @@ export function useAssembleiaAdminRealtime(
             mensagem: 'O limite máximo é de 10 opções por pauta.',
           };
         }
-        opcoesJson = limpas.map((label, idx) => ({
+        opcoesJson = limpas.map((o, idx) => ({
           id: `OPT_${idx + 1}`,
           sigla: String.fromCharCode(65 + idx),
-          label,
+          label: o.label,
+          ...(o.image_url ? { image_url: o.image_url } : {}),
         }));
         maxEscolhas =
           tipoVotacao === 'MULTIPLA_UNICA'

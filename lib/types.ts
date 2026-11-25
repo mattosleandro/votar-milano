@@ -22,12 +22,14 @@ export interface OpcaoPauta {
   id: string;
   sigla: string;
   label: string;
+  image_url?: string | null;
 }
 
 export interface ContagemOpcaoPlacar {
   id: string;
   sigla: string;
   label: string;
+  image_url?: string | null;
   votos: number;
 }
 
