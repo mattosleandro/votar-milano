@@ -6,7 +6,6 @@ services:
       args:
         NEXT_PUBLIC_SUPABASE_URL: "${NEXT_PUBLIC_SUPABASE_URL:-https://api.portalmilano.com}"
         NEXT_PUBLIC_SUPABASE_ANON_KEY: "${NEXT_PUBLIC_SUPABASE_ANON_KEY}"
-        NEXT_PUBLIC_ADMIN_PIN: "${NEXT_PUBLIC_ADMIN_PIN:-M1l@no#26A}"
         NEXT_PUBLIC_APP_URL: "${NEXT_PUBLIC_APP_URL:-https://votar.portalmilano.com}"
     restart: unless-stopped
     expose:
@@ -17,8 +16,10 @@ services:
       - HOSTNAME=0.0.0.0
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-https://api.portalmilano.com}
       - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      - NEXT_PUBLIC_ADMIN_PIN=${NEXT_PUBLIC_ADMIN_PIN:-M1l@no#26A}
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-https://votar.portalmilano.com}
+      - SUPABASE_INTERNAL_URL=${SUPABASE_INTERNAL_URL:-http://supabase-envoy:8000}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
     networks:
       milano_net:
         aliases:

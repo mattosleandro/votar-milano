@@ -41,6 +41,7 @@ interface AdminPortariaSectionProps {
     apartamento: number;
     com_procuracao?: boolean;
     observacao?: string;
+    cpf_procurador?: string;
   }) => Promise<ResultadoOperacaoAdmin>;
   onRemoverPresenca: (
     presenca: Pick<PresencaAdmin, 'id' | 'bloco' | 'apartamento'>
@@ -63,6 +64,9 @@ export function AdminPortariaSection({
     Record<string, boolean>
   >({});
   const [obsProcuracaoPorUnidade, setObsProcuracaoPorUnidade] = useState<
+    Record<string, string>
+  >({});
+  const [cpfProcuradorPorUnidade, setCpfProcuradorPorUnidade] = useState<
     Record<string, string>
   >({});
   const [chaveProcessando, setChaveProcessando] = useState<string | null>(null);
@@ -152,12 +156,14 @@ export function AdminPortariaSection({
     setChaveProcessando(k);
     const comProcuracao = Boolean(tipoEntradaPorUnidade[k]);
     const observacao = obsProcuracaoPorUnidade[k] || '';
+    const cpfProcurador = cpfProcuradorPorUnidade[k] || '';
 
     const res = await onConfirmarPortaria({
       bloco: u.bloco,
       apartamento: u.apartamento,
       com_procuracao: comProcuracao,
       observacao,
+      cpf_procurador: comProcuracao ? cpfProcurador : undefined,
     });
     setChaveProcessando(null);
     onNotificar(res);
@@ -449,18 +455,33 @@ export function AdminPortariaSection({
                         </div>
 
                         {comProcuracao && (
-                          <input
-                            type="text"
-                            value={obsProcuracao}
-                            onChange={(e) =>
-                              setObsProcuracaoPorUnidade((prev) => ({
-                                ...prev,
-                                [k]: e.target.value,
-                              }))
-                            }
-                            placeholder="Nome do procurador / observação (opcional)..."
-                            className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none"
-                          />
+                          <div className="space-y-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={cpfProcuradorPorUnidade[k] || ''}
+                              onChange={(e) =>
+                                setCpfProcuradorPorUnidade((prev) => ({
+                                  ...prev,
+                                  [k]: aplicarMascaraCpf(e.target.value),
+                                }))
+                              }
+                              placeholder="CPF do procurador (opcional — permite votar com o próprio CPF)"
+                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs font-semibold text-slate-900 focus:border-[#0C0C0D] focus:outline-none"
+                            />
+                            <input
+                              type="text"
+                              value={obsProcuracao}
+                              onChange={(e) =>
+                                setObsProcuracaoPorUnidade((prev) => ({
+                                  ...prev,
+                                  [k]: e.target.value,
+                                }))
+                              }
+                              placeholder="Nome do procurador / observação (opcional)..."
+                              className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-900 focus:border-[#0C0C0D] focus:outline-none"
+                            />
+                          </div>
                         )}
                       </div>
                     )}

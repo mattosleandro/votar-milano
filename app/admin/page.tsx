@@ -5,6 +5,7 @@ import Link from 'next/link';
 import {
   AlertCircle,
   Building2,
+  Calendar,
   CheckCircle2,
   Database,
   ExternalLink,
@@ -14,6 +15,8 @@ import {
   KeyRound,
   ListChecks,
   Lock,
+  Mail,
+  PlusCircle,
   RefreshCw,
   Settings2,
   ShieldAlert,
@@ -34,9 +37,8 @@ import {
   ResultadoOperacaoAdmin,
   useAssembleiaAdminRealtime,
 } from '@/hooks/useAssembleiaAdminRealtime';
-import { ADMIN_PIN_CONFIGURADO, ADMIN_SENHA_INTERNA } from '@/lib/supabase';
-
-const CHAVE_SESSAO_ADMIN = 'votar_milano_admin_unlocked_v2';
+import { getSupabaseAuthClient } from '@/lib/supabase';
+import { AppRole } from '@/lib/types';
 
 type AbaAdmin =
   | 'CONVOCACOES'
@@ -54,24 +56,63 @@ interface NotificacaoAdmin extends ResultadoOperacaoAdmin {
 export default function PaginaAdminMesa() {
   const [verificandoSessao, setVerificandoSessao] = useState(true);
   const [autenticado, setAutenticado] = useState(false);
+  const [usuarioEmail, setUsuarioEmail] = useState<string | null>(null);
+
+  const [email, setEmail] = useState('admin@portalmilano.com');
   const [senhaDigitada, setSenhaDigitada] = useState('');
   const [mostrarSenha, setMostrarSenha] = useState(false);
-  const [erroSenha, setErroSenha] = useState<string | null>(null);
+  const [entrando, setEntrando] = useState(false);
+  const [erroLogin, setErroLogin] = useState<string | null>(null);
 
   const [abaAtiva, setAbaAtiva] = useState<AbaAdmin>('CONVOCACOES');
   const [notificacao, setNotificacao] = useState<NotificacaoAdmin | null>(null);
+  const [criandoNovaAsm, setCriandoNovaAsm] = useState(false);
 
+  // Restaura e monitora sessão real do Supabase Auth (JWT assinado + app_metadata.app_role)
   useEffect(() => {
-    try {
-      const salvo = window.sessionStorage.getItem(CHAVE_SESSAO_ADMIN);
-      if (salvo === 'true') {
-        setAutenticado(true);
+    const supabase = getSupabaseAuthClient();
+    let montado = true;
+
+    const validarSessao = async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        if (!montado) return;
+        const role = (session?.user?.app_metadata?.app_role ?? '') as AppRole;
+        if (session && role === 'admin') {
+          setAutenticado(true);
+          setUsuarioEmail(session.user.email ?? null);
+        } else {
+          setAutenticado(false);
+          setUsuarioEmail(null);
+        }
+      } finally {
+        if (montado) setVerificandoSessao(false);
       }
-    } catch {
-      // sessionStorage indisponível
-    } finally {
-      setVerificandoSessao(false);
-    }
+    };
+
+    void validarSessao();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!montado) return;
+      const role = (session?.user?.app_metadata?.app_role ?? '') as AppRole;
+      if (session && role === 'admin') {
+        setAutenticado(true);
+        setUsuarioEmail(session.user.email ?? null);
+      } else {
+        setAutenticado(false);
+        setUsuarioEmail(null);
+      }
+    });
+
+    return () => {
+      montado = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const notificar = useCallback((res: ResultadoOperacaoAdmin) => {
@@ -88,6 +129,10 @@ export default function PaginaAdminMesa() {
   }, [notificacao]);
 
   const {
+    assembleias,
+    assembleiaAtual,
+    assembleiaSelecionadaId,
+    setAssembleiaSelecionadaId,
     config,
     unidadesCadastradas,
     presencas,
@@ -100,6 +145,7 @@ export default function PaginaAdminMesa() {
     erroConexao,
     statusConexao,
     recarregarTudo,
+    criarNovaAssembleia,
     salvarConfiguracao,
     controlarTimerTelao,
     salvarUnidadeBase,
@@ -123,34 +169,65 @@ export default function PaginaAdminMesa() {
     salvarAssembleiaNoHistorico,
     resetarAssembleiaParaNova,
     excluirAssembleiaDoHistorico,
-  } = useAssembleiaAdminRealtime(autenticado);
+  } = useAssembleiaAdminRealtime(autenticado, 'admin');
 
-  const handleAutenticarSenha = (e: React.FormEvent) => {
+  const handleLoginAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const digitada = senhaDigitada.trim();
-    if (digitada === ADMIN_SENHA_INTERNA || digitada === ADMIN_PIN_CONFIGURADO) {
-      setAutenticado(true);
-      setErroSenha(null);
-      setSenhaDigitada('');
-      try {
-        window.sessionStorage.setItem(CHAVE_SESSAO_ADMIN, 'true');
-      } catch {
-        // ignora
+    if (entrando) return;
+    setEntrando(true);
+    setErroLogin(null);
+
+    try {
+      const supabase = getSupabaseAuthClient();
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password: senhaDigitada,
+      });
+
+      if (error || !data.session) {
+        setErroLogin('E-mail ou senha inválidos. Verifique suas credenciais da Mesa Diretora.');
+        return;
       }
-    } else {
-      setErroSenha(
-        'Senha administrativa incorreta. Verifique a senha de 10 caracteres da Mesa Diretora.'
-      );
+
+      const role = (data.session.user.app_metadata?.app_role ?? '') as AppRole;
+      if (role !== 'admin') {
+        await supabase.auth.signOut();
+        setErroLogin(
+          'Esta conta não possui permissão de Administrador da Mesa Diretora (app_role=admin).'
+        );
+        return;
+      }
+
+      setSenhaDigitada('');
+      setAutenticado(true);
+      setUsuarioEmail(data.session.user.email ?? null);
+    } catch {
+      setErroLogin('Falha de comunicação com o servidor de autenticação.');
+    } finally {
+      setEntrando(false);
     }
   };
 
-  const handleBloquearPainel = () => {
+  const handleSair = async () => {
+    const supabase = getSupabaseAuthClient();
+    await supabase.auth.signOut();
     setAutenticado(false);
-    try {
-      window.sessionStorage.removeItem(CHAVE_SESSAO_ADMIN);
-    } catch {
-      // ignora
-    }
+    setUsuarioEmail(null);
+  };
+
+  const handleCriarNovaAssembleiaRapida = async () => {
+    if (criandoNovaAsm) return;
+    setCriandoNovaAsm(true);
+    const hojeStr = new Date().toLocaleDateString('pt-BR');
+    const res = await criarNovaAssembleia({
+      titulo: `Assembleia Geral — ${hojeStr}`,
+      escopo: 'TODOS',
+      horario1: '19:00',
+      horario2: '19:30',
+      ativar: true,
+    });
+    setCriandoNovaAsm(false);
+    notificar(res);
   };
 
   const contadores = useMemo(() => {
@@ -174,7 +251,7 @@ export default function PaginaAdminMesa() {
   }
 
   // ===========================================================================
-  // TELA DE AUTENTICAÇÃO POR SENHA FORTE DE 10 CARACTERES (MESA DIRETORA)
+  // TELA DE LOGIN REAL VIA SUPABASE AUTH (MESA DIRETORA — app_role = 'admin')
   // ===========================================================================
   if (!autenticado) {
     return (
@@ -184,39 +261,61 @@ export default function PaginaAdminMesa() {
             <MilanoLogo variant="dark" className="h-12 w-auto" />
             <span className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-[#CCB285]/40 bg-[#CCB285]/10 px-3 py-1 text-[11px] font-extrabold uppercase tracking-widest text-[#CCB285]">
               <Lock className="h-3.5 w-3.5" />
-              Acesso Restrito • Mesa Diretora
+              Autenticação Segura • Mesa Diretora
             </span>
             <h1 className="mt-3 text-xl font-extrabold text-white">
               Painel de Controle e Auditoria
             </h1>
             <p className="mt-1 text-xs text-slate-400">
-              Informe a senha de segurança de 10 caracteres da Mesa Diretora para gerenciar quórum,
-              cadastro base de condôminos, inadimplentes, pautas e relatórios CSV.
+              Entre com sua conta administrativa oficial (<code className="text-[#CCB285]">admin@portalmilano.com</code>).
             </p>
           </div>
 
-          <form onSubmit={handleAutenticarSenha} className="mt-6 space-y-4">
+          <form onSubmit={(e) => void handleLoginAdmin(e)} className="mt-6 space-y-4">
+            <div>
+              <label
+                htmlFor="admin-email"
+                className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-300"
+              >
+                E-mail Administrativo
+              </label>
+              <div className="relative">
+                <Mail className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-[#CCB285]" />
+                <input
+                  id="admin-email"
+                  type="email"
+                  autoComplete="username"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="admin@portalmilano.com"
+                  className="w-full rounded-xl border border-slate-700 bg-[#0C0C0D] py-3 pl-10 pr-4 text-sm font-semibold text-white focus:border-[#CCB285] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/30"
+                />
+              </div>
+            </div>
+
             <div>
               <label
                 htmlFor="admin-password"
                 className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-300"
               >
-                Senha da Mesa Diretora (10 caracteres)
+                Senha
               </label>
               <div className="relative">
                 <KeyRound className="pointer-events-none absolute left-3.5 top-3.5 h-4 w-4 text-[#CCB285]" />
                 <input
                   id="admin-password"
                   type={mostrarSenha ? 'text' : 'password'}
+                  autoComplete="current-password"
                   autoFocus
                   required
                   value={senhaDigitada}
                   onChange={(e) => {
                     setSenhaDigitada(e.target.value);
-                    if (erroSenha) setErroSenha(null);
+                    if (erroLogin) setErroLogin(null);
                   }}
-                  placeholder="••••••••••"
-                  className="w-full rounded-xl border border-slate-700 bg-[#0C0C0D] py-3 pl-10 pr-11 text-center font-mono text-base font-extrabold tracking-widest text-white focus:border-[#CCB285] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/30"
+                  placeholder="••••••••••••"
+                  className="w-full rounded-xl border border-slate-700 bg-[#0C0C0D] py-3 pl-10 pr-11 font-mono text-sm font-bold text-white focus:border-[#CCB285] focus:outline-none focus:ring-2 focus:ring-[#CCB285]/30"
                 />
                 <button
                   type="button"
@@ -224,37 +323,38 @@ export default function PaginaAdminMesa() {
                   aria-label="Mostrar ou ocultar senha"
                   className="absolute right-3 top-3 text-slate-400 hover:text-white"
                 >
-                  {mostrarSenha ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
+                  {mostrarSenha ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
             </div>
 
-            {erroSenha && (
+            {erroLogin && (
               <div className="flex items-center gap-2 rounded-xl border border-rose-500/40 bg-rose-950/60 px-3.5 py-2.5 text-xs font-semibold text-rose-200">
                 <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" />
-                <span>{erroSenha}</span>
+                <span>{erroLogin}</span>
               </div>
             )}
 
             <button
               type="submit"
-              className="w-full rounded-xl bg-[#CCB285] py-3.5 text-sm font-black uppercase tracking-wider text-[#0C0C0D] shadow-lg transition hover:bg-[#DFCCA9]"
+              disabled={entrando}
+              className="w-full rounded-xl bg-[#CCB285] py-3.5 text-sm font-black uppercase tracking-wider text-[#0C0C0D] shadow-lg transition hover:bg-[#DFCCA9] disabled:opacity-50"
             >
-              Desbloquear Console da Mesa
+              {entrando ? 'Autenticando...' : 'Entrar no Painel da Mesa'}
             </button>
           </form>
 
-          <div className="mt-6 flex items-center justify-center gap-4 border-t border-slate-800 pt-4 text-xs text-slate-400">
+          <div className="mt-6 flex items-center justify-center gap-3 border-t border-slate-800 pt-4 text-xs text-slate-400">
             <Link href="/" className="hover:text-[#CCB285]">
-              Ir para Check-in (/)
+              Tela Morador (/)
+            </Link>
+            <span>•</span>
+            <Link href="/portaria" className="hover:text-[#CCB285]">
+              Portaria (/portaria)
             </Link>
             <span>•</span>
             <Link href="/telao" className="hover:text-[#CCB285]">
-              Abrir Telão (/telao)
+              Telão (/telao)
             </Link>
           </div>
         </div>
@@ -314,6 +414,8 @@ export default function PaginaAdminMesa() {
     },
   ];
 
+  const temAssembleiaAtiva = assembleias.some((a) => a.status === 'ativa');
+
   return (
     <div className="min-h-screen bg-[#F6F5F1] text-slate-900">
       {/* Cabeçalho Institucional Escuro */}
@@ -324,29 +426,47 @@ export default function PaginaAdminMesa() {
             <div className="hidden h-7 w-px bg-slate-800 sm:block" />
             <div>
               <div className="text-xs font-extrabold uppercase tracking-wider text-[#CCB285]">
-                Console da Mesa Diretora
+                Console da Mesa Diretora (V2)
               </div>
               <div className="text-[11px] text-slate-400">
-                Milano Condomínio Club
+                {usuarioEmail || 'admin@portalmilano.com'}
               </div>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Status de Check-in Público */}
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-extrabold ${
-                config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA'
-                  ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
-                  : 'border-rose-500/40 bg-rose-950/60 text-rose-300'
-              }`}
-            >
-              {config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA'
-                ? 'Check-in Liberado (/)'
-                : 'Check-in Bloqueado (/)'}
-            </span>
+            {/* Seletor Multi-Assembleia (Ativa + Históricas como 19/11/2026) */}
+            {assembleias.length > 0 && (
+              <div className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs">
+                <Calendar className="h-3.5 w-3.5 text-[#CCB285]" />
+                <select
+                  aria-label="Selecionar Assembleia"
+                  value={assembleiaSelecionadaId || ''}
+                  onChange={(e) => setAssembleiaSelecionadaId(e.target.value)}
+                  className="bg-transparent font-bold text-white focus:outline-none"
+                >
+                  {assembleias.map((asm) => (
+                    <option key={asm.id} value={asm.id} className="bg-slate-900 text-white">
+                      {asm.titulo} [{asm.status.toUpperCase()}]
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
-            {/* Indicador Realtime */}
+            {!temAssembleiaAtiva && (
+              <button
+                type="button"
+                disabled={criandoNovaAsm}
+                onClick={() => void handleCriarNovaAssembleiaRapida()}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-extrabold text-white transition hover:bg-emerald-500 disabled:opacity-50"
+              >
+                <PlusCircle className="h-3.5 w-3.5" />
+                {criandoNovaAsm ? 'Criando...' : 'Nova Assembleia'}
+              </button>
+            )}
+
+            {/* Indicador Sincronização */}
             <span
               className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${
                 statusConexao === 'AO_VIVO'
@@ -359,7 +479,7 @@ export default function PaginaAdminMesa() {
               ) : (
                 <WifiOff className="h-3.5 w-3.5" />
               )}
-              {statusConexao === 'AO_VIVO' ? 'Realtime Ativo' : 'Reconectando...'}
+              {statusConexao === 'AO_VIVO' ? 'Conectado' : 'Reconectando...'}
             </span>
 
             <button
@@ -378,7 +498,7 @@ export default function PaginaAdminMesa() {
               className="inline-flex items-center gap-1.5 rounded-xl border border-[#CCB285]/60 bg-[#CCB285]/15 px-3 py-1.5 text-xs font-extrabold text-[#CCB285] transition hover:bg-[#CCB285]/25"
             >
               <UserCheck className="h-3.5 w-3.5" />
-              Tela Portaria (/portaria)
+              Portaria
             </Link>
 
             <Link
@@ -386,13 +506,13 @@ export default function PaginaAdminMesa() {
               target="_blank"
               className="inline-flex items-center gap-1.5 rounded-xl bg-[#CCB285] px-3.5 py-1.5 text-xs font-black uppercase tracking-wide text-[#0C0C0D] transition hover:bg-[#DFCCA9]"
             >
-              Abrir Telão
+              Telão
               <ExternalLink className="h-3.5 w-3.5" />
             </Link>
 
             <button
               type="button"
-              onClick={handleBloquearPainel}
+              onClick={() => void handleSair()}
               className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-transparent px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-rose-500 hover:text-rose-300"
             >
               <Lock className="h-3.5 w-3.5" />
@@ -403,6 +523,31 @@ export default function PaginaAdminMesa() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+        {/* Banner indicando quando está visualizando assembleia histórica encerrada */}
+        {assembleiaAtual && assembleiaAtual.status === 'encerrada' && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-slate-300 bg-slate-100 px-4 py-3 text-xs font-bold text-slate-800">
+            <div>
+              Modo Consulta Histórica:{' '}
+              <span className="text-slate-950">{assembleiaAtual.titulo}</span> está{' '}
+              <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] font-black uppercase text-white">
+                ENCERRADA (SOMENTE LEITURA)
+              </span>
+              . Todos os {presencas.length} check-ins, {pautas.length} pautas e {votos.length} votos
+              estão preservados.
+            </div>
+            {!temAssembleiaAtiva && (
+              <button
+                type="button"
+                disabled={criandoNovaAsm}
+                onClick={() => void handleCriarNovaAssembleiaRapida()}
+                className="rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-extrabold text-white hover:bg-emerald-800"
+              >
+                + Iniciar Nova Assembleia
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Toast / Banner de Feedback */}
         {notificacao && (
           <div
@@ -448,9 +593,7 @@ export default function PaginaAdminMesa() {
               {unidadesCadastradas.length}
               <span className="text-xs font-semibold text-slate-400"> / 544</span>
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              Unidades no banco
-            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">Unidades no banco</div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -472,14 +615,12 @@ export default function PaginaAdminMesa() {
             </div>
             <div className="mt-1 text-sm font-extrabold text-slate-900">
               {!config.assembleia_ativa
-                ? 'Não Salvo (Bloqueado)'
+                ? 'Encerrada / Inativa'
                 : config.convocacao_ativa === 'PRIMEIRA'
                   ? `1ª Conv. (${config.horario_primeira_convocacao})`
                   : config.convocacao_ativa === 'SEGUNDA'
                     ? `2ª Conv. (${config.horario_segunda_convocacao})`
-                    : config.convocacao_ativa === 'ENCERRADA'
-                      ? 'Encerrada'
-                      : `Aguardando (${config.horario_primeira_convocacao})`}
+                    : `Aguardando (${config.horario_primeira_convocacao})`}
             </div>
             <div className="mt-0.5 text-[11px] text-slate-500">
               Escopo: {config.escopo_assembleia}
@@ -493,9 +634,7 @@ export default function PaginaAdminMesa() {
             <div className="mt-1 font-mono text-2xl font-extrabold text-[#A88E61] tabular-nums">
               {contadores.construtora}
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              1 voto por apto
-            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">1 voto por apto</div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -505,9 +644,7 @@ export default function PaginaAdminMesa() {
             <div className="mt-1 font-mono text-2xl font-extrabold text-rose-600 tabular-nums">
               {config.total_inadimplentes}
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              Apenas nº total é público
-            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">Apenas nº total é público</div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -519,9 +656,7 @@ export default function PaginaAdminMesa() {
                 ? `#${String(pautaAberta.ordem).padStart(2, '0')} — ${pautaAberta.titulo}`
                 : 'Nenhuma aberta'}
             </div>
-            <div className="mt-0.5 text-[11px] text-slate-500">
-              {pautas.length} pauta(s)
-            </div>
+            <div className="mt-0.5 text-[11px] text-slate-500">{pautas.length} pauta(s)</div>
           </div>
         </section>
 
@@ -564,7 +699,7 @@ export default function PaginaAdminMesa() {
         {/* Conteúdo da Aba Selecionada */}
         {carregandoInicial ? (
           <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-sm font-semibold text-slate-500">
-            Carregando dados da Assembleia em tempo real...
+            Carregando dados da Assembleia...
           </div>
         ) : (
           <>

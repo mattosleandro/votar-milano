@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { coletarTelemetriaDispositivo } from '@/lib/deviceTelemetry';
-import { getSupabaseBrowserClient } from '@/lib/supabase';
+import { getSupabaseMoradorClient, getSupabasePublicClient } from '@/lib/supabase';
 import {
   AssembleiaConfig,
   ConexaoRealtimeStatus,
-  FaseCondominio,
+  ContadoresPublicosAssembleia,
+  GridUnidadeTelaoItem,
   MapaInadimplentesPorEscopo,
-  ModuloCondominio,
   OpcaoVoto,
   PautaAssembleia,
+  PlacarPublicoRpc,
   PresencaPublica,
   VotoUnidade,
 } from '@/lib/types';
@@ -27,6 +28,9 @@ const DEFAULT_INADIMPLENTES_ESCOPO: MapaInadimplentesPorEscopo = {
 
 export const DEFAULT_ASSEMBLEIA_CONFIG: AssembleiaConfig = {
   id: 1,
+  assembleia_id: undefined,
+  titulo: undefined,
+  status: 'encerrada',
   assembleia_ativa: false,
   exigir_confirmacao_portaria: true,
   convocacao_ativa: 'AGUARDANDO',
@@ -39,55 +43,42 @@ export const DEFAULT_ASSEMBLEIA_CONFIG: AssembleiaConfig = {
   timer_duration_seconds: 120,
   timer_started_at: null,
   timer_running: false,
+  version: 1,
   updated_at: new Date(0).toISOString(),
 };
 
-/**
- * Sanitizador estrito: descarta qualquer campo extra (como nome_completo ou cpf)
- * caso venha em um payload bruto do Realtime, garantindo Zero PII no estado público.
- */
-function sanitizarPresencaPublica(raw: Record<string, unknown>): PresencaPublica | null {
-  if (!raw || typeof raw.id !== 'string') return null;
-  const bloco = Number(raw.bloco);
-  const apartamento = Number(raw.apartamento);
-  const fase = Number(raw.fase) as FaseCondominio;
-  const modulo = Number(raw.modulo) as ModuloCondominio;
+const DEFAULT_CONTADORES: ContadoresPublicosAssembleia = {
+  total: 0,
+  fase1: 0,
+  fase2: 0,
+  construtora: 0,
+  confirmados_portaria: 0,
+  conectados_online: 0,
+  com_procuracao: 0,
+  presentes_no_escopo: 0,
+};
 
-  if (!bloco || !apartamento) return null;
-
-  return {
-    id: raw.id,
-    bloco,
-    apartamento,
-    fase: fase === 1 || fase === 2 ? fase : bloco >= 19 ? 1 : 2,
-    modulo:
-      modulo >= 1 && modulo <= 4
-        ? modulo
-        : bloco >= 26
-          ? 1
-          : bloco >= 19
-            ? 2
-            : (bloco >= 1 && bloco <= 4) || (bloco >= 9 && bloco <= 11)
-              ? 3
-              : 4,
-    is_construtora: Boolean(raw.is_construtora),
-    confirmado_portaria:
-      typeof raw.confirmado_portaria === 'boolean' ? raw.confirmado_portaria : true,
-    online_conectado:
-      typeof raw.online_conectado === 'boolean'
-        ? raw.online_conectado
-        : Boolean(raw.is_construtora),
-    com_procuracao: Boolean(raw.com_procuracao),
-    created_at: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
-  };
+interface RpcEstadoPublicoPayload {
+  ok: boolean;
+  server_now?: string;
+  assembleia: Record<string, unknown> | null;
+  pauta_aberta: PautaAssembleia | null;
+  ultima_pauta_encerrada: PautaAssembleia | null;
+  pautas: PautaAssembleia[];
+  placar: PlacarPublicoRpc | null;
+  contadores: ContadoresPublicosAssembleia;
+  unidades_grid?: GridUnidadeTelaoItem[];
 }
 
-function normalizarConfig(raw: Record<string, unknown> | null): AssembleiaConfig {
+function normalizarConfigPublica(raw: Record<string, unknown> | null): AssembleiaConfig {
   if (!raw) return DEFAULT_ASSEMBLEIA_CONFIG;
   const mapaRaw = (raw.inadimplentes_por_escopo ?? {}) as Partial<MapaInadimplentesPorEscopo>;
 
   return {
     id: 1,
+    assembleia_id: typeof raw.id === 'string' ? raw.id : undefined,
+    titulo: typeof raw.titulo === 'string' ? raw.titulo : undefined,
+    status: (raw.status as AssembleiaConfig['status']) || 'encerrada',
     assembleia_ativa: Boolean(raw.assembleia_ativa),
     exigir_confirmacao_portaria:
       typeof raw.exigir_confirmacao_portaria === 'boolean'
@@ -123,215 +114,142 @@ function normalizarConfig(raw: Record<string, unknown> | null): AssembleiaConfig
     timer_started_at:
       typeof raw.timer_started_at === 'string' ? raw.timer_started_at : null,
     timer_running: Boolean(raw.timer_running),
+    version: Number(raw.version ?? 1),
     updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : new Date().toISOString(),
   };
 }
 
-export function useAssembleiaPublicRealtime(channelPrefix = 'public') {
+/**
+ * Hook público 100% sanitizado (Zero PII, Zero postgres_changes em tabelas sensíveis).
+ * - Modo 'morador': consome apenas assembleia_estado_publico() (~500B, placar agregado)
+ *   + lê apenas os próprios votos via JWT assinado.
+ * - Modo 'telao': consome assembleia_telao_snapshot() (estado + grid compacto sem PII e sem limite de 1000 linhas).
+ * Na Fase 3 receberá também push via Realtime Broadcast sanitizado.
+ */
+export function useAssembleiaPublicRealtime(
+  modo: 'morador' | 'telao' = 'morador',
+  moradorJwt?: string | null
+) {
   const [config, setConfig] = useState<AssembleiaConfig>(DEFAULT_ASSEMBLEIA_CONFIG);
-  const [presencas, setPresencas] = useState<PresencaPublica[]>([]);
+  const [pautaAberta, setPautaAberta] = useState<PautaAssembleia | null>(null);
+  const [ultimaPautaEncerrada, setUltimaPautaEncerrada] = useState<PautaAssembleia | null>(null);
   const [pautas, setPautas] = useState<PautaAssembleia[]>([]);
-  const [votos, setVotos] = useState<VotoUnidade[]>([]);
+  const [placarRpc, setPlacarRpc] = useState<PlacarPublicoRpc | null>(null);
+  const [contadores, setContadores] = useState<ContadoresPublicosAssembleia>(DEFAULT_CONTADORES);
+  const [unidadesGrid, setUnidadesGrid] = useState<GridUnidadeTelaoItem[]>([]);
+  const [meusVotos, setMeusVotos] = useState<VotoUnidade[]>([]);
+  const [serverOffsetMs, setServerOffsetMs] = useState<number>(0);
+
   const [carregandoInicial, setCarregandoInicial] = useState(true);
   const [erroConexao, setErroConexao] = useState<string | null>(null);
   const [statusConexao, setStatusConexao] = useState<ConexaoRealtimeStatus>('CONECTANDO');
 
   const isFetchingRef = useRef(false);
+  const lastFetchAtRef = useRef(0);
 
-  const recarregarTudo = useCallback(async () => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
+  const recarregarTudo = useCallback(
+    async (forcar = false) => {
+      const agora = Date.now();
+      if (isFetchingRef.current) return;
+      if (!forcar && agora - lastFetchAtRef.current < 1500) return;
 
-    try {
-      const supabase = getSupabaseBrowserClient();
+      isFetchingRef.current = true;
+      lastFetchAtRef.current = agora;
 
-      // Carregamento paralelo sem cascata (async-parallel) e projeção estrita sem Nome/CPF
-      const [configRes, presencasRes, pautasRes, votosRes] = await Promise.all([
-        supabase
-          .from('assembleia_config')
-          .select(
-            'id, assembleia_ativa, exigir_confirmacao_portaria, convocacao_ativa, horario_primeira_convocacao, horario_segunda_convocacao, escopo_assembleia, descontar_inadimplentes_quorum, total_inadimplentes, inadimplentes_por_escopo, timer_duration_seconds, timer_started_at, timer_running, updated_at'
-          )
-          .eq('id', 1)
-          .maybeSingle(),
-        supabase
-          .from('assembleia_presencas')
-          .select(
-            'id, bloco, apartamento, fase, modulo, is_construtora, confirmado_portaria, online_conectado, com_procuracao, created_at'
-          )
-          .order('bloco', { ascending: true })
-          .order('apartamento', { ascending: true }),
-        supabase
-          .from('assembleia_pautas')
-          .select('id, ordem, titulo, descricao, escopo, status, created_at, opened_at, closed_at')
-          .order('ordem', { ascending: true })
-          .order('created_at', { ascending: true }),
-        supabase
-          .from('assembleia_votos')
-          .select('id, pauta_id, bloco, apartamento, voto, is_construtora, updated_at'),
-      ]);
+      try {
+        const supabasePublic = getSupabasePublicClient();
+        const rpcName =
+          modo === 'telao' ? 'assembleia_telao_snapshot' : 'assembleia_estado_publico';
 
-      if (configRes.error) throw configRes.error;
-      if (presencasRes.error) throw presencasRes.error;
-      if (pautasRes.error) throw pautasRes.error;
-      if (votosRes.error) throw votosRes.error;
+        const { data, error } = await supabasePublic.rpc(rpcName, {
+          p_assembleia_id: null,
+        });
 
-      setConfig(normalizarConfig(configRes.data as Record<string, unknown> | null));
+        if (error) throw error;
 
-      const presencasLimpas: PresencaPublica[] = [];
-      for (const item of presencasRes.data ?? []) {
-        const p = sanitizarPresencaPublica(item as unknown as Record<string, unknown>);
-        if (p) presencasLimpas.push(p);
+        const payload = (data ?? {}) as RpcEstadoPublicoPayload;
+
+        if (payload.server_now) {
+          const srvMs = Date.parse(payload.server_now);
+          if (!Number.isNaN(srvMs)) {
+            setServerOffsetMs(srvMs - Date.now());
+          }
+        }
+
+        const novaConfig = normalizarConfigPublica(payload.assembleia);
+        setConfig(novaConfig);
+        setPautaAberta(payload.pauta_aberta ?? null);
+        setUltimaPautaEncerrada(payload.ultima_pauta_encerrada ?? null);
+        setPautas(payload.pautas ?? []);
+        setPlacarRpc(payload.placar ?? null);
+        setContadores(payload.contadores ?? DEFAULT_CONTADORES);
+        if (modo === 'telao') {
+          setUnidadesGrid(payload.unidades_grid ?? []);
+        }
+
+        // No modo morador autenticado via JWT, consulta exclusivamente os próprios votos (RLS estrito)
+        if (modo === 'morador' && moradorJwt && novaConfig.assembleia_id) {
+          const pautaFocoId = payload.pauta_aberta?.id ?? payload.ultima_pauta_encerrada?.id;
+          if (pautaFocoId) {
+            const clientMorador = getSupabaseMoradorClient(moradorJwt);
+            const { data: votosData } = await clientMorador
+              .from('assembleia_votos')
+              .select('id, assembleia_id, pauta_id, bloco, apartamento, voto, is_construtora, updated_at')
+              .eq('pauta_id', pautaFocoId);
+            if (votosData) {
+              setMeusVotos(votosData as VotoUnidade[]);
+            }
+          } else {
+            setMeusVotos([]);
+          }
+        }
+
+        setErroConexao(null);
+        setStatusConexao('AO_VIVO');
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : 'Falha ao sincronizar dados da assembleia.';
+        setErroConexao(msg);
+        setStatusConexao('RECONECTANDO');
+      } finally {
+        isFetchingRef.current = false;
+        setCarregandoInicial(false);
       }
-      setPresencas(presencasLimpas);
-      setPautas((pautasRes.data ?? []) as PautaAssembleia[]);
-      setVotos((votosRes.data ?? []) as VotoUnidade[]);
-      setErroConexao(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Falha ao sincronizar dados em tempo real.';
-      setErroConexao(msg);
-    } finally {
-      isFetchingRef.current = false;
-      setCarregandoInicial(false);
-    }
-  }, []);
+    },
+    [modo, moradorJwt]
+  );
 
   useEffect(() => {
-    void recarregarTudo();
-    void coletarTelemetriaDispositivo();
+    void recarregarTudo(true);
+    if (modo === 'morador') {
+      void coletarTelemetriaDispositivo();
+    }
 
-    const supabase = getSupabaseBrowserClient();
-    const channelName = `assembleia-${channelPrefix}-${Math.random().toString(36).slice(2, 8)}`;
+    // Polling leve com jitter como ponte segura (Zero PII no Realtime) até Broadcast na Fase 3
+    let timeoutId: number | null = null;
+    let ativo = true;
 
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'assembleia_config' },
-        (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            setConfig(normalizarConfig(payload.new as Record<string, unknown>));
-          }
+    const agendarProximo = () => {
+      if (!ativo) return;
+      const baseMs = modo === 'telao' ? 2000 : 3000;
+      const jitterMs = Math.floor(Math.random() * 1000);
+      timeoutId = window.setTimeout(() => {
+        if (document.visibilityState === 'visible') {
+          void recarregarTudo(false).finally(agendarProximo);
+        } else {
+          agendarProximo();
         }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'assembleia_presencas' },
-        (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const limpa = sanitizarPresencaPublica(payload.new as Record<string, unknown>);
-            if (!limpa) return;
-            setPresencas((atual) => {
-              const idx = atual.findIndex(
-                (item) =>
-                  item.id === limpa.id ||
-                  (item.bloco === limpa.bloco && item.apartamento === limpa.apartamento)
-              );
-              const proximo =
-                idx === -1
-                  ? [...atual, limpa]
-                  : atual.map((item, i) => (i === idx ? limpa : item));
-              return [...proximo].sort(
-                (a, b) => a.bloco - b.bloco || a.apartamento - b.apartamento
-              );
-            });
-          } else if (payload.eventType === 'DELETE') {
-            const oldRow = payload.old as Record<string, unknown>;
-            const oldId = typeof oldRow?.id === 'string' ? oldRow.id : null;
-            const oldBloco = Number(oldRow?.bloco);
-            const oldApto = Number(oldRow?.apartamento);
-            setPresencas((atual) =>
-              atual.filter((item) => {
-                if (oldId && item.id === oldId) return false;
-                if (oldBloco && oldApto && item.bloco === oldBloco && item.apartamento === oldApto) {
-                  return false;
-                }
-                return true;
-              })
-            );
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'assembleia_pautas' },
-        (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const nova = payload.new as PautaAssembleia;
-            setPautas((atual) => {
-              const existe = atual.some((p) => p.id === nova.id);
-              const lista = existe
-                ? atual.map((p) => (p.id === nova.id ? nova : p))
-                : [...atual, nova];
-              return [...lista].sort((a, b) => a.ordem - b.ordem);
-            });
-          } else if (payload.eventType === 'DELETE') {
-            const oldId = (payload.old as { id?: string })?.id;
-            if (oldId) {
-              setPautas((atual) => atual.filter((p) => p.id !== oldId));
-            }
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'assembleia_votos' },
-        (payload) => {
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            const novo = payload.new as VotoUnidade;
-            setVotos((atual) => {
-              const idx = atual.findIndex(
-                (v) =>
-                  v.id === novo.id ||
-                  (v.pauta_id === novo.pauta_id &&
-                    v.bloco === novo.bloco &&
-                    v.apartamento === novo.apartamento)
-              );
-              if (idx === -1) return [...atual, novo];
-              return atual.map((v, i) => (i === idx ? novo : v));
-            });
-          } else if (payload.eventType === 'DELETE') {
-            const oldRow = payload.old as Partial<VotoUnidade>;
-            setVotos((atual) =>
-              atual.filter((v) => {
-                if (oldRow?.id && v.id === oldRow.id) return false;
-                if (
-                  oldRow?.pauta_id &&
-                  oldRow?.bloco &&
-                  oldRow?.apartamento &&
-                  v.pauta_id === oldRow.pauta_id &&
-                  v.bloco === oldRow.bloco &&
-                  v.apartamento === oldRow.apartamento
-                ) {
-                  return false;
-                }
-                return true;
-              })
-            );
-          }
-        }
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setStatusConexao((anterior) => {
-            if (anterior === 'RECONECTANDO') {
-              void recarregarTudo();
-            }
-            return 'AO_VIVO';
-          });
-        } else if (
-          status === 'CHANNEL_ERROR' ||
-          status === 'TIMED_OUT' ||
-          status === 'CLOSED'
-        ) {
-          setStatusConexao('RECONECTANDO');
-        }
-      });
+      }, baseMs + jitterMs);
+    };
 
-    // Ressincroniza automaticamente quando o celular volta do bloqueio de tela ou reconecta no 4G/5G
+    agendarProximo();
+
     const handleVisibilityOrOnline = () => {
       if (document.visibilityState === 'visible') {
-        void recarregarTudo();
+        const jitter = Math.floor(Math.random() * 900);
+        window.setTimeout(() => {
+          void recarregarTudo(false);
+        }, jitter);
       }
     };
 
@@ -339,78 +257,109 @@ export function useAssembleiaPublicRealtime(channelPrefix = 'public') {
     window.addEventListener('online', handleVisibilityOrOnline);
 
     return () => {
+      ativo = false;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
       document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
       window.removeEventListener('online', handleVisibilityOrOnline);
-      void supabase.removeChannel(channel);
     };
-  }, [channelPrefix, recarregarTudo]);
+  }, [modo, recarregarTudo]);
 
-  const pautaAberta = useMemo(
-    () => pautas.find((p) => p.status === 'aberta') ?? null,
-    [pautas]
-  );
+  // Projeção sanitizada de presenças e votos derivada do grid do /telao (para compatibilidade dos cálculos)
+  const presencas: PresencaPublica[] = useMemo(() => {
+    if (modo !== 'telao') return [];
+    return unidadesGrid.map((u) => ({
+      id: u.id,
+      bloco: u.b,
+      apartamento: u.a,
+      fase: u.f,
+      modulo: u.m,
+      is_construtora: u.const,
+      confirmado_portaria: u.port,
+      online_conectado: u.onl,
+      com_procuracao: u.proc,
+      created_at: '',
+    }));
+  }, [modo, unidadesGrid]);
 
-  // Última pauta encerrada para exibição elegante de resultado quando não há pauta aberta
-  const ultimaPautaEncerrada = useMemo(() => {
-    const encerradas = pautas.filter((p) => p.status === 'encerrada');
-    if (encerradas.length === 0) return null;
-    return encerradas.reduce((maisRecente, atual) => {
-      const tA = maisRecente.closed_at ? Date.parse(maisRecente.closed_at) : maisRecente.ordem;
-      const tB = atual.closed_at ? Date.parse(atual.closed_at) : atual.ordem;
-      return tB >= tA ? atual : maisRecente;
-    });
-  }, [pautas]);
+  const votos: VotoUnidade[] = useMemo(() => {
+    if (modo === 'morador') return meusVotos;
+    const pautaFocoId = pautaAberta?.id ?? ultimaPautaEncerrada?.id ?? '';
+    return unidadesGrid
+      .filter((u) => u.voto !== null)
+      .map((u) => ({
+        id: `${pautaFocoId}-${u.b}-${u.a}`,
+        pauta_id: pautaFocoId,
+        bloco: u.b,
+        apartamento: u.a,
+        voto: u.voto as OpcaoVoto,
+        is_construtora: u.const,
+        updated_at: '',
+      }));
+  }, [meusVotos, modo, pautaAberta?.id, ultimaPautaEncerrada?.id, unidadesGrid]);
 
-  /** Registra ou altera voto de forma otimista + upsert transacional no banco */
+  /** Registra voto exclusivamente via RPC autenticada por JWT do morador (validado no servidor) */
   const registrarVotoUnidade = useCallback(
     async (params: {
+      jwtToken: string;
       pautaId: string;
       bloco: number;
       apartamento: number;
-      voto: OpcaoVoto;
-      isConstrutora?: boolean;
-    }): Promise<{ ok: boolean; erro?: string }> => {
+      voto: 'SIM' | 'NAO';
+    }): Promise<{ ok: boolean; erro?: string; jaIgual?: boolean }> => {
       const telemetria = await coletarTelemetriaDispositivo();
-      const supabase = getSupabaseBrowserClient();
-      const { data, error } = await supabase
-        .from('assembleia_votos')
-        .upsert(
-          {
-            pauta_id: params.pautaId,
-            bloco: params.bloco,
-            apartamento: params.apartamento,
-            voto: params.voto,
-            is_construtora: Boolean(params.isConstrutora),
-            ip_address: telemetria.ip_address,
-            device_id: telemetria.device_id,
-            device_name: telemetria.device_name,
-          },
-          { onConflict: 'pauta_id,bloco,apartamento' }
-        )
-        .select('id, pauta_id, bloco, apartamento, voto, is_construtora, updated_at')
-        .single();
+      const clientMorador = getSupabaseMoradorClient(params.jwtToken);
+
+      const { data, error } = await clientMorador.rpc('assembleia_registrar_voto', {
+        p_pauta_id: params.pautaId,
+        p_bloco: params.bloco,
+        p_apartamento: params.apartamento,
+        p_voto: params.voto,
+        p_ip_address: telemetria.ip_address,
+        p_device_id: telemetria.device_id,
+        p_device_name: telemetria.device_name,
+      });
 
       if (error) {
         return { ok: false, erro: error.message };
       }
 
-      if (data) {
-        const novo = data as VotoUnidade;
-        setVotos((atual) => {
-          const idx = atual.findIndex(
-            (v) =>
-              v.pauta_id === novo.pauta_id &&
-              v.bloco === novo.bloco &&
-              v.apartamento === novo.apartamento
-          );
-          if (idx === -1) return [...atual, novo];
-          return atual.map((v, i) => (i === idx ? novo : v));
-        });
+      const res = (data ?? {}) as {
+        ok?: boolean;
+        message?: string;
+        ja_igual?: boolean;
+        id?: string;
+        updated_at?: string;
+      };
+
+      if (!res.ok) {
+        return { ok: false, erro: res.message || 'Não foi possível registrar seu voto.' };
       }
 
-      return { ok: true };
+      const novoVoto: VotoUnidade = {
+        id: res.id || `${params.pautaId}-${params.bloco}-${params.apartamento}`,
+        pauta_id: params.pautaId,
+        bloco: params.bloco,
+        apartamento: params.apartamento,
+        voto: params.voto,
+        is_construtora: false,
+        updated_at: res.updated_at || new Date().toISOString(),
+      };
+
+      setMeusVotos((atual) => {
+        const idx = atual.findIndex(
+          (v) =>
+            v.pauta_id === params.pautaId &&
+            v.bloco === params.bloco &&
+            v.apartamento === params.apartamento
+        );
+        if (idx === -1) return [...atual, novoVoto];
+        return atual.map((v, i) => (i === idx ? novoVoto : v));
+      });
+
+      void recarregarTudo(true);
+      return { ok: true, jaIgual: Boolean(res.ja_igual) };
     },
-    []
+    [recarregarTudo]
   );
 
   return {
@@ -418,8 +367,13 @@ export function useAssembleiaPublicRealtime(channelPrefix = 'public') {
     presencas,
     pautas,
     votos,
+    meusVotos,
+    unidadesGrid,
+    placarRpc,
+    contadores,
     pautaAberta,
     ultimaPautaEncerrada,
+    serverOffsetMs,
     carregandoInicial,
     erroConexao,
     statusConexao,

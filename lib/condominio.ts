@@ -4,6 +4,7 @@ import {
   FaseCondominio,
   ModuloCondominio,
   PautaAssembleia,
+  PlacarPublicoRpc,
   PresencaPublica,
   VotoUnidade,
 } from './types';
@@ -355,10 +356,11 @@ export interface ResumoQuorumEscopo {
   motivoBloqueio?: string;
 }
 
-export function calcularQuorumEscopo(
+export function calcularQuorumPorContagem(
   escopo: EscopoVotacao,
-  presencas: readonly PresencaPublica[],
-  config: AssembleiaConfig
+  presentesNoEscopo: number,
+  config: AssembleiaConfig,
+  presentesConstrutoraNoEscopo = 0
 ): ResumoQuorumEscopo {
   const meta = obterMetadadosEscopo(escopo);
   const totalFisicoEscopo = meta.totalUnidades;
@@ -372,24 +374,14 @@ export function calcularQuorumEscopo(
     : totalFisicoEscopo;
 
   const minimoPrimeiraConvocacao = Math.floor(baseConvocadosAptos / 2) + 1;
+  const presentesLimpos = Math.max(0, Number(presentesNoEscopo || 0));
+  const construtoraLimpa = Math.max(0, Math.min(presentesLimpos, Number(presentesConstrutoraNoEscopo || 0)));
 
-  let presentesNoEscopo = 0;
-  let presentesConstrutoraNoEscopo = 0;
-
-  for (const p of presencas) {
-    if (unidadePertenceAoEscopo(p, escopo)) {
-      presentesNoEscopo += 1;
-      if (p.is_construtora) {
-        presentesConstrutoraNoEscopo += 1;
-      }
-    }
-  }
-
-  const presentesMoradoresNoEscopo = presentesNoEscopo - presentesConstrutoraNoEscopo;
-  const faltamParaPrimeiraConvocacao = Math.max(minimoPrimeiraConvocacao - presentesNoEscopo, 0);
+  const presentesMoradoresNoEscopo = presentesLimpos - construtoraLimpa;
+  const faltamParaPrimeiraConvocacao = Math.max(minimoPrimeiraConvocacao - presentesLimpos, 0);
   const percentualPresencaBase =
-    baseConvocadosAptos > 0 ? (presentesNoEscopo / baseConvocadosAptos) * 100 : 0;
-  const atingiuMaioriaAbsoluta = presentesNoEscopo >= minimoPrimeiraConvocacao;
+    baseConvocadosAptos > 0 ? (presentesLimpos / baseConvocadosAptos) * 100 : 0;
+  const atingiuMaioriaAbsoluta = presentesLimpos >= minimoPrimeiraConvocacao;
 
   let podeAbrirVotacao = false;
   let motivoBloqueio: string | undefined;
@@ -411,8 +403,8 @@ export function calcularQuorumEscopo(
     }
   } else {
     // SEGUNDA convocação: Maioria Simples (com quem estiver presente no momento)
-    podeAbrirVotacao = presentesNoEscopo >= 1;
-    if (presentesNoEscopo < 1) {
+    podeAbrirVotacao = presentesLimpos >= 1;
+    if (presentesLimpos < 1) {
       motivoBloqueio = 'É necessário ao menos 1 representante credenciado no escopo para votar.';
     }
   }
@@ -423,8 +415,8 @@ export function calcularQuorumEscopo(
     inadimplentesNoEscopo,
     baseConvocadosAptos,
     minimoPrimeiraConvocacao,
-    presentesNoEscopo,
-    presentesConstrutoraNoEscopo,
+    presentesNoEscopo: presentesLimpos,
+    presentesConstrutoraNoEscopo: construtoraLimpa,
     presentesMoradoresNoEscopo,
     faltamParaPrimeiraConvocacao,
     percentualPresencaBase,
@@ -432,6 +424,26 @@ export function calcularQuorumEscopo(
     podeAbrirVotacao,
     motivoBloqueio,
   };
+}
+
+export function calcularQuorumEscopo(
+  escopo: EscopoVotacao,
+  presencas: readonly PresencaPublica[],
+  config: AssembleiaConfig
+): ResumoQuorumEscopo {
+  let presentesNoEscopo = 0;
+  let presentesConstrutoraNoEscopo = 0;
+
+  for (const p of presencas) {
+    if (unidadePertenceAoEscopo(p, escopo)) {
+      presentesNoEscopo += 1;
+      if (p.is_construtora) {
+        presentesConstrutoraNoEscopo += 1;
+      }
+    }
+  }
+
+  return calcularQuorumPorContagem(escopo, presentesNoEscopo, config, presentesConstrutoraNoEscopo);
 }
 
 export type ResultadoVencedorPauta = 'SIM' | 'NAO' | 'EMPATE' | 'SEM_VOTOS';
@@ -521,6 +533,38 @@ export function calcularPlacarPauta(
     pctSimValidos: totalVotosRegistrados > 0 ? (sim / divisorValidos) * 100 : 0,
     pctNaoValidos: totalVotosRegistrados > 0 ? (nao / divisorValidos) * 100 : 0,
     vencedor,
+    diferencaVotos: Math.abs(sim - nao),
+  };
+}
+
+export function converterPlacarRpcParaPlacarPauta(placar: PlacarPublicoRpc): PlacarPauta {
+  const sim = Math.max(0, Number(placar.sim || 0));
+  const nao = Math.max(0, Number(placar.nao || 0));
+  const totalVotosRegistrados = Math.max(0, Number(placar.total_votos ?? sim + nao));
+  const presentesAptos = Math.max(Number(placar.presentes_aptos || 0), totalVotosRegistrados);
+  const naoVotaram = Math.max(Number(placar.nao_votaram ?? presentesAptos - totalVotosRegistrados), 0);
+
+  const divisorPresentes = presentesAptos > 0 ? presentesAptos : 1;
+  const divisorValidos = totalVotosRegistrados > 0 ? totalVotosRegistrados : 1;
+  const pctNaoVotaram = presentesAptos > 0 ? (naoVotaram / divisorPresentes) * 100 : 0;
+
+  return {
+    escopo: placar.escopo,
+    presentesAptos,
+    sim,
+    nao,
+    naoVotaram,
+    abstencao: naoVotaram,
+    aguardando: naoVotaram,
+    totalVotosRegistrados,
+    pctSim: presentesAptos > 0 ? (sim / divisorPresentes) * 100 : 0,
+    pctNao: presentesAptos > 0 ? (nao / divisorPresentes) * 100 : 0,
+    pctNaoVotaram,
+    pctAbstencao: pctNaoVotaram,
+    pctAguardando: pctNaoVotaram,
+    pctSimValidos: totalVotosRegistrados > 0 ? (sim / divisorValidos) * 100 : 0,
+    pctNaoValidos: totalVotosRegistrados > 0 ? (nao / divisorValidos) * 100 : 0,
+    vencedor: placar.vencedor,
     diferencaVotos: Math.abs(sim - nao),
   };
 }

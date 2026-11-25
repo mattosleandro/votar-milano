@@ -6,34 +6,90 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'public-ano
 export const APP_PUBLIC_URL =
   process.env.NEXT_PUBLIC_APP_URL || 'https://votar.portalmilano.com';
 
-export const ADMIN_SENHA_INTERNA = 'M1l@no#26A';
+let publicClient: SupabaseClient | null = null;
+let authClient: SupabaseClient | null = null;
+let moradorClientCache: { token: string; client: SupabaseClient } | null = null;
 
-// Garante que mesmo se uma variável de ambiente sem aspas tiver truncado no '#', a senha de 10 caracteres funcione
-const envPinRaw = (
-  process.env.NEXT_PUBLIC_ADMIN_PASSWORD ||
-  process.env.NEXT_PUBLIC_ADMIN_PIN ||
-  ''
-).trim();
-
-export const ADMIN_PIN_CONFIGURADO =
-  envPinRaw.length >= 10 ? envPinRaw : ADMIN_SENHA_INTERNA;
-
-let browserClient: SupabaseClient | null = null;
-
-export function getSupabaseBrowserClient(): SupabaseClient {
-  if (!browserClient) {
-    browserClient = createClient(supabaseUrl, supabaseAnonKey, {
+/**
+ * Cliente público (anon) — usado exclusivamente pelo /telao e leitura de RPCs públicas sanitizadas.
+ */
+export function getSupabasePublicClient(): SupabaseClient {
+  if (!publicClient) {
+    publicClient = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
+        detectSessionInUrl: false,
       },
       realtime: {
         params: {
-          eventsPerSecond: 25,
+          eventsPerSecond: 10,
         },
         heartbeatIntervalMs: 15000,
       },
     });
   }
-  return browserClient;
+  return publicClient;
+}
+
+/**
+ * Cliente autenticado via Supabase Auth (e-mail + senha) — usado por /admin e /portaria.
+ */
+export function getSupabaseAuthClient(): SupabaseClient {
+  if (!authClient) {
+    authClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storageKey: 'votar_milano_staff_auth_v2',
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+        heartbeatIntervalMs: 15000,
+      },
+    });
+  }
+  return authClient;
+}
+
+/**
+ * Cliente autenticado via JWT assinado do morador (emitido por POST /api/auth/checkin).
+ * Usado exclusivamente na tela mobile (/) para leitura dos próprios votos e votação via RPC.
+ */
+export function getSupabaseMoradorClient(jwtToken: string): SupabaseClient {
+  if (moradorClientCache && moradorClientCache.token === jwtToken) {
+    return moradorClientCache.client;
+  }
+
+  const client = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        Authorization: `Bearer ${jwtToken}`,
+      },
+    },
+    realtime: {
+      params: {
+        eventsPerSecond: 10,
+      },
+      heartbeatIntervalMs: 15000,
+    },
+  });
+
+  moradorClientCache = { token: jwtToken, client };
+  return client;
+}
+
+/**
+ * Alias de compatibilidade apontando para o cliente público sanitizado.
+ */
+export function getSupabaseBrowserClient(): SupabaseClient {
+  return getSupabasePublicClient();
 }

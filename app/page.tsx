@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock,
   Eye,
+  FileCheck2,
   Lock,
   LogOut,
   RefreshCw,
@@ -24,9 +25,9 @@ import {
 import { MilanoLogo } from '@/components/MilanoLogo';
 import { useAssembleiaPublicRealtime } from '@/hooks/useAssembleiaPublicRealtime';
 import {
-  calcularPlacarPauta,
-  calcularQuorumEscopo,
+  calcularQuorumPorContagem,
   chaveUnidade,
+  converterPlacarRpcParaPlacarPauta,
   formatarBloco,
   formatarSegundosMMSS,
   formatarUnidadeCompleta,
@@ -36,138 +37,144 @@ import {
   unidadePertenceAoEscopo,
 } from '@/lib/condominio';
 import { coletarTelemetriaDispositivo } from '@/lib/deviceTelemetry';
-import { getSupabaseBrowserClient } from '@/lib/supabase';
-import { OpcaoVoto, PresencaPublica, SessaoMoradorLocal } from '@/lib/types';
+import {
+  FaseCondominio,
+  ModuloCondominio,
+  SessaoMoradorLocal,
+  UnidadeAutorizadaJwt,
+} from '@/lib/types';
 import { aplicarMascaraCpf, validarCpf } from '@/lib/validators';
 
-const STORAGE_KEY_SESSAO = 'votar_milano_sessao_v2';
+const STORAGE_KEY_SESSAO = 'votar_milano_sessao_v3_jwt';
+const LEGACY_STORAGE_KEY = 'votar_milano_sessao_v2';
 
-type FiltroEspelhoMobile = 'MEU_BLOCO' | 'VOTARAM' | 'PRESENTES_ESCOPO';
-
-interface UnidadeLocalizadaCpf {
-  id: string;
+interface UnidadeLocalizadaCheckin {
   bloco: number;
   apartamento: number;
-  fase: 1 | 2;
-  modulo: 1 | 2 | 3 | 4;
-  nome_completo: string;
+  fase: FaseCondominio;
+  modulo: ModuloCondominio;
+  primeiro_nome: string;
   is_inadimplente: boolean;
-  is_construtora: boolean;
   pertence_escopo: boolean;
-  confirmado_portaria?: boolean;
-  online_conectado?: boolean;
-  ja_credenciado: boolean;
+  confirmado_portaria: boolean;
+  online_conectado: boolean;
+  com_procuracao: boolean;
+  origem: 'PROPRIA' | 'PROCURACAO';
 }
 
-interface RpcConsultaCpfResponse {
+interface ApiCheckinResponse {
   ok: boolean;
   code: string;
   message?: string;
+  assembleia_id?: string;
   escopo_assembleia?: string;
-  unidades?: UnidadeLocalizadaCpf[];
-}
-
-interface RpcConfirmarCheckinResponse {
-  ok: boolean;
-  code: string;
-  message: string;
-  presenca?: {
-    id: string;
-    bloco: number;
-    apartamento: number;
-    fase: 1 | 2;
-    modulo: 1 | 2 | 3 | 4;
-    nome_completo: string;
-    is_construtora: boolean;
-    created_at: string;
-  };
+  exigir_confirmacao_portaria?: boolean;
+  unidades?: UnidadeLocalizadaCheckin[];
+  token?: string;
+  exp?: number;
+  unidades_autorizadas?: UnidadeAutorizadaJwt[];
 }
 
 export default function PaginaMorador() {
-  const {
-    config,
-    presencas,
-    pautaAberta,
-    ultimaPautaEncerrada,
-    votos,
-    carregandoInicial,
-    statusConexao,
-    recarregarTudo,
-    registrarVotoUnidade,
-  } = useAssembleiaPublicRealtime('morador');
-
   const [sessao, setSessao] = useState<SessaoMoradorLocal | null>(null);
   const [sessaoCarregadaStorage, setSessaoCarregadaStorage] = useState(false);
   const [avisoSessaoEncerrada, setAvisoSessaoEncerrada] = useState<string | null>(null);
 
-  // Estado do Check-in por CPF em 2 passos
+  const {
+    config,
+    pautaAberta,
+    ultimaPautaEncerrada,
+    meusVotos,
+    placarRpc,
+    contadores,
+    serverOffsetMs,
+    carregandoInicial,
+    erroConexao,
+    statusConexao,
+    recarregarTudo,
+    registrarVotoUnidade,
+  } = useAssembleiaPublicRealtime('morador', sessao?.token ?? null);
+
+  // Estado do Check-in por CPF em 2 passos (via POST /api/auth/checkin)
   const [cpf, setCpf] = useState('');
   const [consultandoCpf, setConsultandoCpf] = useState(false);
   const [confirmandoCheckin, setConfirmandoCheckin] = useState(false);
   const [unidadesEncontradas, setUnidadesEncontradas] = useState<
-    UnidadeLocalizadaCpf[] | null
+    UnidadeLocalizadaCheckin[] | null
   >(null);
   const [unidadeEscolhidaKey, setUnidadeEscolhidaKey] = useState<string>('');
   const [erroFormulario, setErroFormulario] = useState<string | null>(null);
-  const [bloqueioInadimplenteMsg, setBloqueioInadimplenteMsg] = useState<string | null>(
-    null
-  );
+  const [aguardandoPortariaMsg, setAguardandoPortariaMsg] = useState<string | null>(null);
+  const [bloqueioInadimplenteMsg, setBloqueioInadimplenteMsg] = useState<string | null>(null);
 
-  // Estado de votação e espelho mobile
-  const [enviandoVoto, setEnviandoVoto] = useState<OpcaoVoto | null>(null);
+  // Estado de votação
+  const [enviandoVoto, setEnviandoVoto] = useState<'SIM' | 'NAO' | null>(null);
   const [erroVoto, setErroVoto] = useState<string | null>(null);
   const [feedbackVoto, setFeedbackVoto] = useState<string | null>(null);
-  const [filtroEspelho, setFiltroEspelho] = useState<FiltroEspelhoMobile>('MEU_BLOCO');
-  const [mostrarEspelhoVotos, setMostrarEspelhoVotos] = useState(true);
   const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
-    const id = window.setInterval(() => setAgoraMs(Date.now()), 1000);
+    const id = window.setInterval(() => setAgoraMs(Date.now() + serverOffsetMs), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [serverOffsetMs]);
 
-  // 1. Restaura sessão do localStorage ao iniciar
+  // 1. Restaura sessão JWT do localStorage ao iniciar e limpa chave legada v2
   useEffect(() => {
     try {
+      window.localStorage.removeItem(LEGACY_STORAGE_KEY);
       const salvo = window.localStorage.getItem(STORAGE_KEY_SESSAO);
       if (salvo) {
         const parsed = JSON.parse(salvo) as SessaoMoradorLocal;
-        if (parsed?.id && parsed?.bloco && parsed?.apartamento) {
+        const agoraSec = Math.floor(Date.now() / 1000);
+        if (
+          parsed?.token &&
+          parsed?.assembleiaId &&
+          Array.isArray(parsed?.unidadesAutorizadas) &&
+          parsed.unidadesAutorizadas.length > 0 &&
+          typeof parsed.exp === 'number' &&
+          parsed.exp > agoraSec + 30
+        ) {
           setSessao(parsed);
+        } else {
+          window.localStorage.removeItem(STORAGE_KEY_SESSAO);
         }
       }
     } catch {
-      // Ignora JSON corrompido
+      window.localStorage.removeItem(STORAGE_KEY_SESSAO);
     } finally {
       setSessaoCarregadaStorage(true);
     }
   }, []);
 
-  // 2. Verifica se a presença da sessão local continua ativa no banco e se a assembleia está ativa
+  // 2. Valida sessão contra a assembleia ativa e expiração do JWT
   useEffect(() => {
     if (carregandoInicial || !sessao) return;
 
-    if (!config.assembleia_ativa || config.convocacao_ativa === 'ENCERRADA') {
-      window.localStorage.removeItem(STORAGE_KEY_SESSAO);
-      setSessao(null);
-      return;
-    }
+    const agoraSec = Math.floor((Date.now() + serverOffsetMs) / 1000);
+    const jwtExpirado = sessao.exp <= agoraSec + 15;
+    const outraAssembleia =
+      Boolean(config.assembleia_id) && sessao.assembleiaId !== config.assembleia_id;
 
-    const aindaAtiva = presencas.some(
-      (p) => p.bloco === sessao.bloco && p.apartamento === sessao.apartamento
-    );
-    if (!aindaAtiva) {
+    if (
+      !config.assembleia_ativa ||
+      config.convocacao_ativa === 'ENCERRADA' ||
+      jwtExpirado ||
+      outraAssembleia
+    ) {
       window.localStorage.removeItem(STORAGE_KEY_SESSAO);
       setSessao(null);
-      setAvisoSessaoEncerrada(
-        'O credenciamento da sua unidade foi atualizado ou encerrado pela Mesa Diretora. Digite seu CPF novamente se necessário.'
-      );
+      if (jwtExpirado || outraAssembleia) {
+        setAvisoSessaoEncerrada(
+          'Sua sessão anterior expirou ou pertence a outra assembleia. Informe seu CPF novamente para validar o acesso.'
+        );
+      }
     }
   }, [
     carregandoInicial,
     config.assembleia_ativa,
+    config.assembleia_id,
     config.convocacao_ativa,
-    presencas,
+    serverOffsetMs,
     sessao,
   ]);
 
@@ -176,9 +183,16 @@ export default function PaginaMorador() {
     if (!config.assembleia_ativa || config.convocacao_ativa === 'ENCERRADA') {
       setUnidadesEncontradas(null);
       setBloqueioInadimplenteMsg(null);
+      setAguardandoPortariaMsg(null);
       setErroFormulario(null);
     }
   }, [config.assembleia_ativa, config.convocacao_ativa]);
+
+  // Limpa feedback visual ao trocar de pauta aberta
+  useEffect(() => {
+    setFeedbackVoto(null);
+    setErroVoto(null);
+  }, [pautaAberta?.id]);
 
   const votacaoAtivaNoMomento =
     config.assembleia_ativa && config.convocacao_ativa !== 'ENCERRADA';
@@ -193,8 +207,7 @@ export default function PaginaMorador() {
     if (!config.timer_running || !config.timer_started_at) return null;
     const inicio = Date.parse(config.timer_started_at);
     if (Number.isNaN(inicio)) return null;
-    const rest = Math.max(0, duracao - Math.floor((agoraMs - inicio) / 1000));
-    return rest;
+    return Math.max(0, duracao - Math.floor((agoraMs - inicio) / 1000));
   }, [
     config.timer_duration_seconds,
     config.timer_running,
@@ -204,81 +217,120 @@ export default function PaginaMorador() {
 
   const tempoVotacaoEsgotado = segundosRestantesTimer !== null && segundosRestantesTimer <= 0;
 
-  // Passo 1: Consultar CPF na base pré-cadastrada
-  const handleConsultarCpf = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErroFormulario(null);
-    setBloqueioInadimplenteMsg(null);
-    setAvisoSessaoEncerrada(null);
-    setUnidadesEncontradas(null);
+  // Unidade ativa atualmente selecionada pelo morador/procurador na sessão
+  const unidadeAtivaSessao: UnidadeAutorizadaJwt | null = useMemo(() => {
+    if (!sessao || sessao.unidadesAutorizadas.length === 0) return null;
+    return (
+      sessao.unidadesAutorizadas.find(
+        (u) => u.bloco === sessao.blocoAtivo && u.apartamento === sessao.apartamentoAtivo
+      ) ?? sessao.unidadesAutorizadas[0]
+    );
+  }, [sessao]);
 
-    if (!votacaoAtivaNoMomento) {
-      setErroFormulario('Não existe nenhuma votação ativa no momento.');
-      return;
-    }
+  const selecionarUnidadeAtivaSessao = useCallback((u: UnidadeAutorizadaJwt) => {
+    setSessao((atual) => {
+      if (!atual) return null;
+      const atualizada: SessaoMoradorLocal = {
+        ...atual,
+        blocoAtivo: u.bloco,
+        apartamentoAtivo: u.apartamento,
+      };
+      try {
+        window.localStorage.setItem(STORAGE_KEY_SESSAO, JSON.stringify(atualizada));
+      } catch {
+        // Ignora erro de quota
+      }
+      return atualizada;
+    });
+    setFeedbackVoto(null);
+    setErroVoto(null);
+  }, []);
 
-    const resCpf = validarCpf(cpf);
-    if (!resCpf.valido) {
-      setErroFormulario(resCpf.erro ?? 'Informe um CPF válido.');
-      return;
-    }
+  // Passo 1: Consultar CPF no servidor (/api/auth/checkin)
+  const executarConsultaCpf = useCallback(
+    async (cpfTexto: string) => {
+      setErroFormulario(null);
+      setBloqueioInadimplenteMsg(null);
+      setAguardandoPortariaMsg(null);
+      setAvisoSessaoEncerrada(null);
+      setUnidadesEncontradas(null);
 
-    setConsultandoCpf(true);
-    try {
-      const supabase = getSupabaseBrowserClient();
-      const { data, error } = await supabase.rpc('assembleia_consultar_cpf', {
-        p_cpf: resCpf.cpfLimpo,
-      });
-
-      if (error) {
-        setErroFormulario(
-          error.message || 'Erro ao consultar CPF. Tente novamente.'
-        );
+      if (!votacaoAtivaNoMomento) {
+        setErroFormulario('Não existe nenhuma votação ativa no momento.');
         return;
       }
 
-      const resposta = data as RpcConsultaCpfResponse;
-      if (!resposta?.ok) {
-        if (resposta?.code === 'UNIDADE_INADIMPLENTE') {
-          setBloqueioInadimplenteMsg(
-            resposta.message ||
-              'Unidade bloqueada para realizar votação. Efetue o pagamento dos valores referentes ao condomínio e apresente o comprovante ao Síndico / Mesa Diretora para liberar a votação.'
-          );
-          if (resposta.unidades && resposta.unidades.length > 0) {
-            setUnidadesEncontradas(resposta.unidades);
-          }
-        } else {
-          setErroFormulario(
-            resposta?.message || 'Não foi possível localizar unidade para este CPF.'
-          );
+      const resCpf = validarCpf(cpfTexto);
+      if (!resCpf.valido) {
+        setErroFormulario(resCpf.erro ?? 'Informe um CPF válido.');
+        return;
+      }
+
+      setConsultandoCpf(true);
+      try {
+        const response = await fetch('/api/auth/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'consultar',
+            cpf: resCpf.cpfLimpo,
+          }),
+        });
+
+        const resposta = (await response.json()) as ApiCheckinResponse;
+
+        if (!response.ok || !resposta?.ok) {
           if (resposta?.unidades && resposta.unidades.length > 0) {
             setUnidadesEncontradas(resposta.unidades);
+            setUnidadeEscolhidaKey(
+              chaveUnidade(resposta.unidades[0].bloco, resposta.unidades[0].apartamento)
+            );
           }
+
+          if (resposta?.code === 'UNIDADE_INADIMPLENTE') {
+            setBloqueioInadimplenteMsg(
+              resposta.message ||
+                'Unidade bloqueada para realizar votação. Efetue o pagamento dos valores referentes ao condomínio e apresente o comprovante ao Síndico / Mesa Diretora.'
+            );
+          } else if (resposta?.code === 'AGUARDANDO_LIBERACAO_PORTARIA') {
+            setAguardandoPortariaMsg(
+              resposta.message ||
+                'Sua unidade foi localizada, mas ainda aguarda a confirmação de presença na entrada (Portaria).'
+            );
+          } else {
+            setErroFormulario(
+              resposta?.message || 'Não foi possível localizar unidade para este CPF.'
+            );
+          }
+          return;
         }
-        return;
-      }
 
-      const lista = resposta.unidades ?? [];
-      setUnidadesEncontradas(lista);
+        const lista = resposta.unidades ?? [];
+        setUnidadesEncontradas(lista);
 
-      // Seleciona por padrão a primeira unidade adimplente e dentro do escopo
-      const primeiraApta = lista.find(
-        (u) => !u.is_inadimplente && u.pertence_escopo
-      );
-      if (primeiraApta) {
-        setUnidadeEscolhidaKey(
-          chaveUnidade(primeiraApta.bloco, primeiraApta.apartamento)
+        const primeiraApta = lista.find(
+          (u) =>
+            !u.is_inadimplente &&
+            u.pertence_escopo &&
+            (!resposta.exigir_confirmacao_portaria || u.confirmado_portaria)
         );
-      } else if (lista[0]) {
-        setUnidadeEscolhidaKey(chaveUnidade(lista[0].bloco, lista[0].apartamento));
+        if (primeiraApta) {
+          setUnidadeEscolhidaKey(chaveUnidade(primeiraApta.bloco, primeiraApta.apartamento));
+        } else if (lista[0]) {
+          setUnidadeEscolhidaKey(chaveUnidade(lista[0].bloco, lista[0].apartamento));
+        }
+      } catch {
+        setErroFormulario('Falha de comunicação com o servidor. Verifique sua conexão.');
+      } finally {
+        setConsultandoCpf(false);
       }
-    } catch {
-      setErroFormulario(
-        'Falha de comunicação com o servidor. Verifique sua conexão.'
-      );
-    } finally {
-      setConsultandoCpf(false);
-    }
+    },
+    [votacaoAtivaNoMomento]
+  );
+
+  const handleConsultarCpf = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await executarConsultaCpf(cpf);
   };
 
   const unidadeSelecionadaConfirmacao = useMemo(() => {
@@ -290,7 +342,17 @@ export default function PaginaMorador() {
     );
   }, [unidadesEncontradas, unidadeEscolhidaKey]);
 
-  // Passo 2: Confirmar Bloco, Apartamento e Fase + Enviar Telemetria do Aparelho
+  const unidadesAptasParaConfirmar = useMemo(() => {
+    if (!unidadesEncontradas) return [];
+    return unidadesEncontradas.filter(
+      (u) =>
+        !u.is_inadimplente &&
+        u.pertence_escopo &&
+        (!config.exigir_confirmacao_portaria || u.confirmado_portaria)
+    );
+  }, [config.exigir_confirmacao_portaria, unidadesEncontradas]);
+
+  // Passo 2: Confirmar Bloco/Apto + emitir JWT assinado no servidor
   const handleConfirmarCheckin = async () => {
     if (!unidadeSelecionadaConfirmacao || confirmandoCheckin) return;
 
@@ -299,7 +361,7 @@ export default function PaginaMorador() {
 
     if (unidadeSelecionadaConfirmacao.is_inadimplente) {
       setBloqueioInadimplenteMsg(
-        'Unidade bloqueada para realizar votação. Para liberar o voto, quite os valores pendentes referentes ao condomínio e apresente o comprovante ao Síndico / Mesa Diretora.'
+        'Unidade bloqueada para realizar votação por inadimplência. Procure o Síndico / Mesa Diretora.'
       );
       return;
     }
@@ -313,64 +375,64 @@ export default function PaginaMorador() {
 
     setConfirmandoCheckin(true);
     setErroFormulario(null);
+    setAguardandoPortariaMsg(null);
 
     try {
       const telemetria = await coletarTelemetriaDispositivo();
-      const supabase = getSupabaseBrowserClient();
+      const response = await fetch('/api/auth/checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'confirmar',
+          cpf: resCpf.cpfLimpo,
+          bloco: unidadeSelecionadaConfirmacao.bloco,
+          apartamento: unidadeSelecionadaConfirmacao.apartamento,
+          device_id: telemetria.device_id,
+          device_name: telemetria.device_name,
+          user_agent: telemetria.user_agent,
+        }),
+      });
 
-      const { data, error } = await supabase.rpc(
-        'assembleia_confirmar_checkin_cpf',
-        {
-          p_cpf: resCpf.cpfLimpo,
-          p_bloco: unidadeSelecionadaConfirmacao.bloco,
-          p_apartamento: unidadeSelecionadaConfirmacao.apartamento,
-          p_ip_address: telemetria.ip_address,
-          p_device_id: telemetria.device_id,
-          p_device_name: telemetria.device_name,
-          p_user_agent: telemetria.user_agent,
-        }
-      );
+      const resposta = (await response.json()) as ApiCheckinResponse;
 
-      if (error) {
-        setErroFormulario(error.message || 'Erro ao confirmar check-in.');
-        return;
-      }
-
-      const resposta = data as RpcConfirmarCheckinResponse;
-      if (!resposta?.ok || !resposta.presenca) {
+      if (
+        !response.ok ||
+        !resposta?.ok ||
+        !resposta.token ||
+        !resposta.exp ||
+        !resposta.assembleia_id ||
+        !resposta.unidades_autorizadas ||
+        resposta.unidades_autorizadas.length === 0
+      ) {
         if (resposta?.code === 'UNIDADE_INADIMPLENTE') {
-          setBloqueioInadimplenteMsg(resposta.message);
-        } else {
-          setErroFormulario(
-            resposta?.message || 'Não foi possível concluir o check-in.'
+          setBloqueioInadimplenteMsg(resposta.message || 'Unidade inadimplente.');
+        } else if (resposta?.code === 'AGUARDANDO_LIBERACAO_PORTARIA') {
+          setAguardandoPortariaMsg(
+            resposta.message || 'Aguardando liberação na Portaria / Recepção.'
           );
+        } else {
+          setErroFormulario(resposta?.message || 'Não foi possível concluir a validação.');
         }
         return;
       }
 
-      const p = resposta.presenca;
-      const primeiroNome = p.nome_completo.split(' ')[0] || 'Condômino';
+      const primeira = resposta.unidades_autorizadas[0];
       const novaSessao: SessaoMoradorLocal = {
-        id: p.id,
-        bloco: p.bloco,
-        apartamento: p.apartamento,
-        fase: p.fase,
-        modulo: p.modulo,
-        primeiroNome,
-        cpfLimpo: resCpf.cpfLimpo,
-        createdAt: p.created_at,
+        token: resposta.token,
+        exp: resposta.exp,
+        assembleiaId: resposta.assembleia_id,
+        unidadesAutorizadas: resposta.unidades_autorizadas,
+        blocoAtivo: primeira.bloco,
+        apartamentoAtivo: primeira.apartamento,
+        createdAt: new Date().toISOString(),
       };
 
-      window.localStorage.setItem(
-        STORAGE_KEY_SESSAO,
-        JSON.stringify(novaSessao)
-      );
+      window.localStorage.setItem(STORAGE_KEY_SESSAO, JSON.stringify(novaSessao));
       setSessao(novaSessao);
-      void recarregarTudo();
+      setUnidadesEncontradas(null);
+      void recarregarTudo(true);
     } catch {
-      setErroFormulario(
-        'Falha ao confirmar check-in. Verifique sua conexão 4G/5G.'
-      );
+      setErroFormulario('Falha ao confirmar acesso. Verifique sua conexão 4G/5G.');
     } finally {
       setConfirmandoCheckin(false);
     }
@@ -380,34 +442,49 @@ export default function PaginaMorador() {
     window.localStorage.removeItem(STORAGE_KEY_SESSAO);
     setSessao(null);
     setUnidadesEncontradas(null);
+    setAguardandoPortariaMsg(null);
+    setBloqueioInadimplenteMsg(null);
     setFeedbackVoto(null);
     setErroVoto(null);
   }, []);
 
-  // Voto da unidade conectada na pauta aberta
-  const meuVotoAtual = useMemo(() => {
-    if (!sessao || !pautaAberta) return null;
-    return (
-      votos.find(
-        (v) =>
-          v.pauta_id === pautaAberta.id &&
-          v.bloco === sessao.bloco &&
-          v.apartamento === sessao.apartamento
-      )?.voto ?? null
-    );
-  }, [sessao, pautaAberta, votos]);
+  // Mapa O(1) dos próprios votos do morador/procurador na pauta em foco
+  const pautaEmFoco = pautaAberta ?? ultimaPautaEncerrada;
 
-  const handleVotar = async (opcao: OpcaoVoto) => {
-    if (!sessao || !pautaAberta || enviandoVoto) return;
+  const mapaMeusVotosPautaFoco = useMemo(() => {
+    const mapa = new Map<string, 'SIM' | 'NAO'>();
+    if (!pautaEmFoco) return mapa;
+    for (const v of meusVotos) {
+      if (v.pauta_id === pautaEmFoco.id && (v.voto === 'SIM' || v.voto === 'NAO')) {
+        mapa.set(chaveUnidade(v.bloco, v.apartamento), v.voto);
+      }
+    }
+    return mapa;
+  }, [meusVotos, pautaEmFoco]);
+
+  const meuVotoAtual = useMemo(() => {
+    if (!unidadeAtivaSessao || !pautaAberta) return null;
+    return (
+      mapaMeusVotosPautaFoco.get(
+        chaveUnidade(unidadeAtivaSessao.bloco, unidadeAtivaSessao.apartamento)
+      ) ?? null
+    );
+  }, [mapaMeusVotosPautaFoco, pautaAberta, unidadeAtivaSessao]);
+
+  const handleVotar = async (opcao: 'SIM' | 'NAO') => {
+    if (!sessao || !unidadeAtivaSessao || !pautaAberta || enviandoVoto) return;
+    // Bloqueia re-submissão redundante do mesmo voto já registrado
+    if (meuVotoAtual === opcao) return;
+
     setEnviandoVoto(opcao);
     setErroVoto(null);
 
     const res = await registrarVotoUnidade({
+      jwtToken: sessao.token,
       pautaId: pautaAberta.id,
-      bloco: sessao.bloco,
-      apartamento: sessao.apartamento,
+      bloco: unidadeAtivaSessao.bloco,
+      apartamento: unidadeAtivaSessao.apartamento,
       voto: opcao,
-      isConstrutora: false,
     });
 
     setEnviandoVoto(null);
@@ -416,67 +493,34 @@ export default function PaginaMorador() {
       return;
     }
 
-    const rotuloVoto =
-      opcao === 'SIM' ? 'SIM' : opcao === 'NAO' ? 'NÃO' : 'ABSTENÇÃO';
+    const rotuloVoto = opcao === 'SIM' ? 'SIM' : 'NÃO';
     setFeedbackVoto(
-      `Seu voto [${rotuloVoto}] foi registrado no telão para ${formatarUnidadeTelaoCompacta(
-        sessao.bloco,
-        sessao.apartamento
+      `Voto [${rotuloVoto}] registrado para ${formatarUnidadeTelaoCompacta(
+        unidadeAtivaSessao.bloco,
+        unidadeAtivaSessao.apartamento
       )}!`
     );
   };
 
-  // Cálculo de Quórum e Placar
-  const pautaEmFoco = pautaAberta ?? ultimaPautaEncerrada;
+  // Cálculo de Quórum e Placar (100% derivado dos agregados públicos sanitizados — Zero PII!)
   const escopoAtivo = pautaEmFoco?.escopo ?? config.escopo_assembleia;
-  const metaEscopoAtivo = useMemo(
-    () => obterMetadadosEscopo(escopoAtivo),
-    [escopoAtivo]
-  );
+  const metaEscopoAtivo = useMemo(() => obterMetadadosEscopo(escopoAtivo), [escopoAtivo]);
 
   const resumoQuorum = useMemo(
-    () => calcularQuorumEscopo(escopoAtivo, presencas, config),
-    [escopoAtivo, presencas, config]
+    () =>
+      calcularQuorumPorContagem(
+        escopoAtivo,
+        contadores.presentes_no_escopo,
+        config,
+        contadores.construtora
+      ),
+    [config, contadores.construtora, contadores.presentes_no_escopo, escopoAtivo]
   );
 
   const placarAoVivo = useMemo(() => {
-    if (!pautaEmFoco) return null;
-    return calcularPlacarPauta(pautaEmFoco, presencas, votos);
-  }, [pautaEmFoco, presencas, votos]);
-
-  const mapaVotosPautaEmFoco = useMemo(() => {
-    const map = new Map<string, OpcaoVoto>();
-    if (!pautaEmFoco) return map;
-    for (const v of votos) {
-      if (v.pauta_id === pautaEmFoco.id) {
-        map.set(chaveUnidade(v.bloco, v.apartamento), v.voto);
-      }
-    }
-    return map;
-  }, [pautaEmFoco, votos]);
-
-  const unidadesEspelhoMobile = useMemo(() => {
-    const aptasNoEscopo = presencas.filter((p) =>
-      unidadePertenceAoEscopo(p, escopoAtivo)
-    );
-
-    if (filtroEspelho === 'MEU_BLOCO' && sessao) {
-      return aptasNoEscopo.filter((p) => p.bloco === sessao.bloco);
-    }
-    if (filtroEspelho === 'VOTARAM' && pautaEmFoco) {
-      return aptasNoEscopo.filter((p) =>
-        mapaVotosPautaEmFoco.has(chaveUnidade(p.bloco, p.apartamento))
-      );
-    }
-    return aptasNoEscopo;
-  }, [
-    presencas,
-    escopoAtivo,
-    filtroEspelho,
-    sessao,
-    pautaEmFoco,
-    mapaVotosPautaEmFoco,
-  ]);
+    if (!placarRpc || !pautaEmFoco || placarRpc.pauta_id !== pautaEmFoco.id) return null;
+    return converterPlacarRpcParaPlacarPauta(placarRpc);
+  }, [pautaEmFoco, placarRpc]);
 
   if (!sessaoCarregadaStorage) {
     return (
@@ -516,7 +560,7 @@ export default function PaginaMorador() {
                 </>
               ) : (
                 <>
-                  <WifiOff className="w-3 h-3 animate-spin" />
+                  <WifiOff className="w-3 h-3 animate-pulse" />
                   SYNC
                 </>
               )}
@@ -526,6 +570,25 @@ export default function PaginaMorador() {
       </header>
 
       <main className="flex-1 max-w-xl w-full mx-auto px-4 py-5 space-y-5">
+        {erroConexao ? (
+          <div
+            role="alert"
+            className="rounded-xl bg-amber-50 border border-amber-300 px-3.5 py-2.5 text-xs font-semibold text-amber-950 flex items-center justify-between gap-2"
+          >
+            <span className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4 text-amber-700 shrink-0" />
+              Oscilação na rede — reconectando automaticamente...
+            </span>
+            <button
+              type="button"
+              onClick={() => void recarregarTudo(true)}
+              className="px-2.5 py-1 rounded-lg bg-amber-200 hover:bg-amber-300 text-amber-950 font-bold shrink-0"
+            >
+              Atualizar
+            </button>
+          </div>
+        ) : null}
+
         {/* Banner Global de Convocação, Quórum e Total Agregado de Inadimplentes */}
         <section
           aria-label="Status da Convocação e Quórum"
@@ -594,9 +657,7 @@ export default function PaginaMorador() {
 
             <div className="rounded-xl bg-white/5 border border-white/10 p-2.5">
               <p className="text-[11px] text-slate-400 uppercase tracking-wider">
-                {config.convocacao_ativa === 'PRIMEIRA'
-                  ? 'Mín. 1ª Conv.'
-                  : 'Quórum Atual'}
+                {config.convocacao_ativa === 'PRIMEIRA' ? 'Mín. 1ª Conv.' : 'Quórum Atual'}
               </p>
               <p className="text-lg font-bold font-mono text-milano-gold">
                 {config.convocacao_ativa === 'PRIMEIRA'
@@ -614,17 +675,16 @@ export default function PaginaMorador() {
                 className="text-lg font-bold font-mono text-amber-300"
                 title="Quantidade total agregada de unidades sem direito a voto"
               >
-                {config.total_inadimplentes}{' '}
-                <span className="text-xs font-normal">un.</span>
+                {config.total_inadimplentes} <span className="text-xs font-normal">un.</span>
               </p>
             </div>
           </div>
         </section>
 
         {/* ===================================================================
-            ESTADO 1: CHECK-IN APENAS POR CPF (Se não estiver logado)
+            ESTADO 1: CHECK-IN APENAS POR CPF (Se não estiver autenticado)
            =================================================================== */}
-        {!sessao ? (
+        {!sessao || !unidadeAtivaSessao ? (
           <section className="rounded-2xl bg-white p-5 sm:p-6 shadow-sm border border-slate-200/90 space-y-5">
             <div className="space-y-1">
               <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-milano-gold-dark">
@@ -632,11 +692,11 @@ export default function PaginaMorador() {
                 Credenciamento Oficial por CPF
               </div>
               <h1 className="text-xl font-extrabold tracking-tight text-slate-900">
-                Check-in da Unidade
+                Validação da Unidade
               </h1>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Digite apenas o seu <strong>CPF</strong> para localizar sua unidade e confirmar o
-                Bloco, Apartamento e Fase.
+                Digite apenas o seu <strong>CPF</strong> (titular ou procurador confirmado na
+                portaria) para localizar sua(s) unidade(s) e liberar o voto.
               </p>
             </div>
 
@@ -652,7 +712,7 @@ export default function PaginaMorador() {
                 </div>
                 <p className="text-xs text-amber-900 leading-relaxed">
                   O check-in por CPF será liberado automaticamente assim que a Mesa Diretora
-                  definir e salvar o Quórum e os Horários de Convocação da Assembleia.
+                  abrir a assembleia e definir o Quórum e os Horários de Convocação.
                 </p>
               </div>
             )}
@@ -674,7 +734,7 @@ export default function PaginaMorador() {
                   htmlFor="cpf-morador"
                   className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5"
                 >
-                  CPF do Condômino Responsável
+                  CPF do Condômino ou Procurador
                 </label>
                 <div className="flex flex-col sm:flex-row gap-2.5">
                   <input
@@ -695,6 +755,7 @@ export default function PaginaMorador() {
                       setCpf(aplicarMascaraCpf(e.target.value));
                       if (erroFormulario) setErroFormulario(null);
                       if (bloqueioInadimplenteMsg) setBloqueioInadimplenteMsg(null);
+                      if (aguardandoPortariaMsg) setAguardandoPortariaMsg(null);
                       if (unidadesEncontradas) setUnidadesEncontradas(null);
                     }}
                     className="flex-1 min-h-[50px] rounded-xl border border-slate-300 px-3.5 py-2.5 text-base font-mono font-bold text-slate-900 placeholder:text-slate-400 focus:border-[#0C0C0D] focus:outline-none focus:ring-2 focus:ring-milano-gold/50 tabular-nums disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
@@ -738,15 +799,52 @@ export default function PaginaMorador() {
                   <div className="pt-1 flex flex-wrap gap-2">
                     {unidadesEncontradas.map((u) => (
                       <span
-                        key={u.id}
+                        key={chaveUnidade(u.bloco, u.apartamento)}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-white border border-rose-200 px-3 py-1 font-mono text-xs font-bold text-rose-900"
                       >
-                        Bloco {formatarBloco(u.bloco)} • Apto {u.apartamento} • Fase{' '}
-                        {u.fase} (Módulo {u.modulo})
+                        Bloco {formatarBloco(u.bloco)} • Apto {u.apartamento} • Fase {u.fase}{' '}
+                        (Módulo {u.modulo})
                       </span>
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* AVISO DE AGUARDANDO CONFIRMAÇÃO NA PORTARIA */}
+            {aguardandoPortariaMsg && (
+              <div
+                role="alert"
+                className="rounded-2xl bg-violet-50 border-2 border-violet-300 p-4 text-violet-950 space-y-3"
+              >
+                <div className="flex items-center gap-2 font-extrabold text-sm text-violet-900">
+                  <ShieldCheck className="w-5 h-5 text-violet-700 shrink-0" />
+                  <span>Aguardando Confirmação de Entrada na Portaria</span>
+                </div>
+                <p className="text-xs leading-relaxed text-violet-900 font-medium">
+                  {aguardandoPortariaMsg}
+                </p>
+                {unidadesEncontradas && unidadesEncontradas.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {unidadesEncontradas.map((u) => (
+                      <span
+                        key={chaveUnidade(u.bloco, u.apartamento)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-white border border-violet-200 px-3 py-1 font-mono text-xs font-bold text-violet-900"
+                      >
+                        Bloco {formatarBloco(u.bloco)} • Apto {u.apartamento} • Fase {u.fase}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={consultandoCpf}
+                  onClick={() => void executarConsultaCpf(cpf)}
+                  className="w-full min-h-[44px] rounded-xl bg-violet-700 hover:bg-violet-800 text-white font-bold text-xs flex items-center justify-center gap-2 transition"
+                >
+                  <RefreshCw className={`w-4 h-4 ${consultandoCpf ? 'animate-spin' : ''}`} />
+                  Já passei na Portaria — Verificar Liberação Novamente
+                </button>
               </div>
             )}
 
@@ -776,6 +874,7 @@ export default function PaginaMorador() {
             {unidadesEncontradas &&
               unidadesEncontradas.length > 0 &&
               !bloqueioInadimplenteMsg &&
+              !aguardandoPortariaMsg &&
               unidadeSelecionadaConfirmacao && (
                 <div className="rounded-2xl border-2 border-[#0C0C0D] bg-[#0C0C0D] text-white p-5 space-y-4 shadow-lg">
                   <div className="flex items-center justify-between">
@@ -789,10 +888,10 @@ export default function PaginaMorador() {
                   </div>
 
                   {unidadesEncontradas.length > 1 && (
-                    <div>
-                      <label className="block text-xs font-bold text-slate-300 mb-1.5">
-                        Você possui {unidadesEncontradas.length} unidades vinculadas a este CPF.
-                        Selecione qual deseja confirmar:
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-300">
+                        Encontramos {unidadesEncontradas.length} unidades vinculadas a este CPF
+                        (todas as aptas serão liberadas na sua sessão):
                       </label>
                       <select
                         value={unidadeEscolhidaKey}
@@ -804,12 +903,15 @@ export default function PaginaMorador() {
                           return (
                             <option key={ch} value={ch}>
                               Bloco {formatarBloco(u.bloco)} • Apto {u.apartamento} — Fase{' '}
-                              {u.fase} / Módulo {u.modulo}{' '}
+                              {u.fase} / Módulo {u.modulo}
+                              {u.com_procuracao ? ' [PROCURAÇÃO]' : ''}
                               {u.is_inadimplente
-                                ? '(BLOQUEADO - INADIMPLENTE)'
+                                ? ' (BLOQUEADO - INADIMPLENTE)'
                                 : !u.pertence_escopo
-                                  ? '(FORA DO QUÓRUM ATUAL)'
-                                  : ''}
+                                  ? ' (FORA DO QUÓRUM)'
+                                  : config.exigir_confirmacao_portaria && !u.confirmado_portaria
+                                    ? ' (AGUARDANDO PORTARIA)'
+                                    : ''}
                             </option>
                           );
                         })}
@@ -847,12 +949,18 @@ export default function PaginaMorador() {
                     </div>
                   </div>
 
-                  <div className="rounded-xl bg-white/5 px-3.5 py-2.5 text-xs text-slate-300 flex items-center justify-between">
-                    <span>
-                      Condômino:{' '}
+                  <div className="rounded-xl bg-white/5 px-3.5 py-2.5 text-xs text-slate-300 flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-2">
+                      Titular:{' '}
                       <strong className="text-white">
-                        {unidadeSelecionadaConfirmacao.nome_completo.split(' ')[0]}
+                        {unidadeSelecionadaConfirmacao.primeiro_nome}
                       </strong>
+                      {unidadeSelecionadaConfirmacao.com_procuracao ? (
+                        <span className="inline-flex items-center gap-1 rounded bg-amber-300 text-[#0C0C0D] px-1.5 py-0.5 text-[10px] font-black uppercase">
+                          <FileCheck2 className="w-3 h-3" />
+                          Procuração
+                        </span>
+                      ) : null}
                     </span>
                     <span className="font-mono text-milano-gold-light font-bold">
                       Fase {unidadeSelecionadaConfirmacao.fase} • Módulo{' '}
@@ -860,115 +968,160 @@ export default function PaginaMorador() {
                     </span>
                   </div>
 
-                  {(() => {
-                    const confirmadoPortariaTempoReal =
-                      !config.exigir_confirmacao_portaria ||
-                      Boolean(unidadeSelecionadaConfirmacao.confirmado_portaria) ||
-                      presencas.some(
-                        (p) =>
-                          p.bloco === unidadeSelecionadaConfirmacao.bloco &&
-                          p.apartamento === unidadeSelecionadaConfirmacao.apartamento &&
-                          p.confirmado_portaria !== false
-                      );
-
-                    if (unidadeSelecionadaConfirmacao.is_inadimplente) {
-                      return (
-                        <div className="rounded-xl bg-rose-950/90 border border-rose-500/50 p-3.5 text-xs text-rose-200 font-semibold">
-                          Esta unidade está bloqueada para realizar votação por inadimplência.
-                          Efetue o pagamento dos valores pendentes do condomínio e apresente ao
-                          Síndico para liberar a votação.
-                        </div>
-                      );
-                    }
-
-                    if (!unidadeSelecionadaConfirmacao.pertence_escopo) {
-                      return (
-                        <div className="rounded-xl bg-amber-950/90 border border-amber-500/50 p-3.5 text-xs text-amber-200 font-semibold">
-                          Esta unidade não pertence ao Quórum selecionado no momento (
-                          {obterMetadadosEscopo(config.escopo_assembleia).rotuloCurto}).
-                        </div>
-                      );
-                    }
-
-                    if (!confirmadoPortariaTempoReal) {
-                      return (
-                        <div className="rounded-xl bg-violet-950/90 border border-violet-400/50 p-3.5 text-xs text-violet-100 font-semibold space-y-1">
-                          <p className="font-extrabold text-violet-200 uppercase">
-                            Aguardando Liberação na Portaria / Entrada
-                          </p>
-                          <p>
-                            Apresente seu documento ou procuração aos atendentes na entrada da
-                            assembleia. Assim que confirmarem no portão, este botão será liberado
-                            automaticamente!
-                          </p>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <button
-                        type="button"
-                        disabled={confirmandoCheckin}
-                        onClick={() => void handleConfirmarCheckin()}
-                        className="w-full min-h-[54px] rounded-xl bg-emerald-600 text-white font-black text-base tracking-wide shadow-md hover:bg-emerald-500 active:scale-[0.99] transition flex items-center justify-center gap-2"
-                      >
-                        {confirmandoCheckin ? (
-                          <>
-                            <RefreshCw className="w-5 h-5 animate-spin" />
-                            Conectando Unidade...
-                          </>
-                        ) : (
-                          <>
-                            <UserCheck className="w-5 h-5" />
-                            Validar e Conectar Bloco{' '}
-                            {formatarBloco(unidadeSelecionadaConfirmacao.bloco)} • Apto{' '}
-                            {unidadeSelecionadaConfirmacao.apartamento} (Fase{' '}
-                            {unidadeSelecionadaConfirmacao.fase})
-                          </>
-                        )}
-                      </button>
-                    );
-                  })()}
+                  {unidadeSelecionadaConfirmacao.is_inadimplente ? (
+                    <div className="rounded-xl bg-rose-950/90 border border-rose-500/50 p-3.5 text-xs text-rose-200 font-semibold">
+                      Esta unidade está bloqueada para votação por inadimplência. Procure o
+                      Síndico / Mesa Diretora para regularização.
+                    </div>
+                  ) : !unidadeSelecionadaConfirmacao.pertence_escopo ? (
+                    <div className="rounded-xl bg-amber-950/90 border border-amber-500/50 p-3.5 text-xs text-amber-200 font-semibold">
+                      Esta unidade não pertence ao Quórum selecionado no momento (
+                      {obterMetadadosEscopo(config.escopo_assembleia).rotuloCurto}).
+                    </div>
+                  ) : config.exigir_confirmacao_portaria &&
+                    !unidadeSelecionadaConfirmacao.confirmado_portaria ? (
+                    <div className="rounded-xl bg-violet-950/90 border border-violet-400/50 p-3.5 text-xs text-violet-100 font-semibold space-y-2">
+                      <p className="font-extrabold text-violet-200 uppercase">
+                        Aguardando Liberação na Portaria / Entrada
+                      </p>
+                      <p>
+                        Apresente seu documento ou procuração aos atendentes na entrada da
+                        assembleia.
+                      </p>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={confirmandoCheckin}
+                      onClick={() => void handleConfirmarCheckin()}
+                      className="w-full min-h-[54px] rounded-xl bg-emerald-600 text-white font-black text-base tracking-wide shadow-md hover:bg-emerald-500 active:scale-[0.99] transition flex items-center justify-center gap-2"
+                    >
+                      {confirmandoCheckin ? (
+                        <>
+                          <RefreshCw className="w-5 h-5 animate-spin" />
+                          Validando Sessão Segura...
+                        </>
+                      ) : (
+                        <>
+                          <UserCheck className="w-5 h-5" />
+                          {unidadesAptasParaConfirmar.length > 1
+                            ? `Conectar ${unidadesAptasParaConfirmar.length} Unidades Autorizadas`
+                            : `Validar e Conectar Bloco ${formatarBloco(
+                                unidadeSelecionadaConfirmacao.bloco
+                              )} • Apto ${unidadeSelecionadaConfirmacao.apartamento}`}
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               )}
           </section>
         ) : (
           /* ===================================================================
-             ESTADO 2: SALA DE VOTAÇÃO EM TEMPO REAL (Após Check-in por CPF)
+             ESTADO 2: SALA DE VOTAÇÃO AUTENTICADA POR JWT (Suporta 1 ou N unidades/procurações)
              =================================================================== */
           <section className="space-y-4">
-            {/* Cartão da Unidade Conectada */}
-            <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-xl bg-[#0C0C0D] text-milano-gold font-mono font-extrabold text-xs flex flex-col items-center justify-center border border-milano-gold/40 shrink-0">
-                  <span>B{formatarBloco(sessao.bloco)}</span>
-                  <span className="text-white text-sm">{sessao.apartamento}</span>
-                </div>
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                    <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
-                      Check-in Confirmado
-                    </span>
+            {/* Cartão da Unidade Conectada + Seletor Multi-Unidade / Procuração */}
+            <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-[#0C0C0D] text-milano-gold font-mono font-extrabold text-xs flex flex-col items-center justify-center border border-milano-gold/40 shrink-0">
+                    <span>B{formatarBloco(unidadeAtivaSessao.bloco)}</span>
+                    <span className="text-white text-sm">{unidadeAtivaSessao.apartamento}</span>
                   </div>
-                  <h2 className="text-base font-extrabold text-slate-900">
-                    {formatarUnidadeCompleta(sessao.bloco, sessao.apartamento)}
-                  </h2>
-                  <p className="text-xs font-semibold text-slate-600">
-                    Fase {sessao.fase} • Módulo {sessao.modulo}
-                  </p>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
+                        Acesso Validado
+                      </span>
+                      {unidadeAtivaSessao.com_procuracao ? (
+                        <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[10px] font-black text-amber-900 uppercase">
+                          <FileCheck2 className="w-3 h-3" />
+                          Procuração
+                        </span>
+                      ) : null}
+                    </div>
+                    <h2 className="text-base font-extrabold text-slate-900">
+                      {formatarUnidadeCompleta(
+                        unidadeAtivaSessao.bloco,
+                        unidadeAtivaSessao.apartamento
+                      )}
+                    </h2>
+                    <p className="text-xs font-semibold text-slate-600">
+                      Fase {unidadeAtivaSessao.fase} • Módulo {unidadeAtivaSessao.modulo}
+                    </p>
+                  </div>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleTrocarUnidadeLocal}
+                  title="Sair desta sessão neste aparelho"
+                  className="p-2.5 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition text-xs font-semibold flex items-center gap-1"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span className="sr-only sm:not-sr-only">Sair</span>
+                </button>
               </div>
 
-              <button
-                type="button"
-                onClick={handleTrocarUnidadeLocal}
-                title="Sair desta sessão neste aparelho"
-                className="p-2.5 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition text-xs font-semibold flex items-center gap-1"
-              >
-                <LogOut className="w-4 h-4" />
-                <span className="sr-only sm:not-sr-only">Trocar</span>
-              </button>
+              {/* Seletor Multi-Unidade (Proprietário de 2+ unidades ou Procurador) */}
+              {sessao.unidadesAutorizadas.length > 1 && (
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-600">
+                    Unidades autorizadas nesta sessão ({sessao.unidadesAutorizadas.length}) — toque
+                    para votar por cada uma:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {sessao.unidadesAutorizadas.map((u) => {
+                      const ch = chaveUnidade(u.bloco, u.apartamento);
+                      const ativa =
+                        u.bloco === unidadeAtivaSessao.bloco &&
+                        u.apartamento === unidadeAtivaSessao.apartamento;
+                      const votoDaUnidade = mapaMeusVotosPautaFoco.get(ch);
+
+                      return (
+                        <button
+                          key={ch}
+                          type="button"
+                          onClick={() => selecionarUnidadeAtivaSessao(u)}
+                          className={`px-3 py-2 rounded-xl border text-xs font-mono font-bold transition flex items-center gap-1.5 ${
+                            ativa
+                              ? 'bg-[#0C0C0D] text-milano-gold border-[#0C0C0D] shadow-sm'
+                              : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>{formatarUnidadeTelaoCompacta(u.bloco, u.apartamento)}</span>
+                          {u.com_procuracao ? (
+                            <span className="px-1 py-0.5 rounded bg-amber-300 text-[#0C0C0D] text-[9px] font-black">
+                              P
+                            </span>
+                          ) : null}
+                          {pautaAberta ? (
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                                votoDaUnidade === 'SIM'
+                                  ? 'bg-emerald-600 text-white'
+                                  : votoDaUnidade === 'NAO'
+                                    ? 'bg-rose-600 text-white'
+                                    : ativa
+                                      ? 'bg-white/15 text-amber-300'
+                                      : 'bg-amber-100 text-amber-900'
+                              }`}
+                            >
+                              {votoDaUnidade === 'SIM'
+                                ? 'SIM ✓'
+                                : votoDaUnidade === 'NAO'
+                                  ? 'NÃO ✓'
+                                  : 'Pendente'}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Painel Deliberativo da Pauta */}
@@ -981,14 +1134,14 @@ export default function PaginaMorador() {
                   Presença confirmada! Aguarde a mesa abrir a próxima votação no telão...
                 </h3>
                 <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Sua tela atualizará sozinha no exato segundo em que a Mesa Diretora abrir a
-                  pauta. Não é necessário recarregar a página.
+                  Sua tela atualizará sozinha assim que a Mesa Diretora abrir a pauta. Não é
+                  necessário recarregar a página.
                 </p>
               </div>
             ) : (
               (() => {
                 const aptoNaPauta = unidadePertenceAoEscopo(
-                  sessao,
+                  unidadeAtivaSessao,
                   pautaAberta.escopo
                 );
                 const metaPauta = obterMetadadosEscopo(pautaAberta.escopo);
@@ -1023,13 +1176,13 @@ export default function PaginaMorador() {
                           Votação Exclusiva: {metaPauta.rotuloCurto}
                         </p>
                         <p className="leading-relaxed">
-                          Sua unidade pertence à{' '}
+                          A unidade selecionada pertence à{' '}
                           <strong>
-                            Fase {sessao.fase} • Módulo {sessao.modulo}
+                            Fase {unidadeAtivaSessao.fase} • Módulo {unidadeAtivaSessao.modulo}
                           </strong>
-                          . Esta pauta delibera exclusivamente sobre assuntos de{' '}
-                          <strong>{metaPauta.descricaoBlocos}</strong>. Você pode acompanhar a
-                          apuração ao vivo logo abaixo!
+                          . Esta pauta delibera exclusivamente sobre{' '}
+                          <strong>{metaPauta.descricaoBlocos}</strong>. Você pode acompanhar o
+                          placar ao vivo logo abaixo!
                         </p>
                       </div>
                     ) : (
@@ -1038,59 +1191,68 @@ export default function PaginaMorador() {
                           <div className="rounded-xl bg-amber-50 border border-amber-300 p-3.5 text-xs font-bold text-amber-950 flex items-center gap-2">
                             <Timer className="w-4 h-4 text-amber-700 shrink-0" />
                             <span>
-                              Tempo de deliberação esgotado (00:00). Confira o resultado final abaixo!
+                              Tempo de deliberação esgotado (00:00). Confira o resultado final
+                              abaixo!
                             </span>
                           </div>
                         ) : (
                           <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
-                            Toque na sua opção de voto (1 voto pela unidade{' '}
+                            Toque na sua opção de voto (unidade{' '}
                             {formatarUnidadeTelaoCompacta(
-                              sessao.bloco,
-                              sessao.apartamento
-                            )}{' '}
-                            — quem não votar será contabilizado como Abstenção / Imparcial):
+                              unidadeAtivaSessao.bloco,
+                              unidadeAtivaSessao.apartamento
+                            )}
+                            {' — '}quem não votar será contabilizado como Abstenção / Imparcial):
                           </p>
                         )}
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <button
                             type="button"
-                            disabled={enviandoVoto !== null || tempoVotacaoEsgotado}
-                            onClick={() => handleVotar('SIM')}
-                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:opacity-60 ${
+                            disabled={
+                              enviandoVoto !== null ||
+                              tempoVotacaoEsgotado ||
+                              meuVotoAtual === 'SIM'
+                            }
+                            onClick={() => void handleVotar('SIM')}
+                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:cursor-default ${
                               meuVotoAtual === 'SIM'
                                 ? 'bg-emerald-600 text-white border-emerald-800 shadow-lg ring-4 ring-emerald-500/25'
-                                : 'bg-emerald-50/90 text-emerald-950 border-emerald-400 hover:bg-emerald-100'
+                                : 'bg-emerald-50/90 text-emerald-950 border-emerald-400 hover:bg-emerald-100 disabled:opacity-60'
                             }`}
                           >
                             <span className="flex items-center gap-3">
                               <ThumbsUp className="w-5 h-5" />
-                              SIM (APROVAR)
+                              {enviandoVoto === 'SIM' ? 'Registrando...' : 'SIM (APROVAR)'}
                             </span>
                             {meuVotoAtual === 'SIM' ? (
                               <span className="text-xs uppercase px-2.5 py-1 rounded-full bg-white/20 font-bold">
-                                Voto Confirmado ✓
+                                Confirmado ✓
                               </span>
                             ) : null}
                           </button>
 
                           <button
                             type="button"
-                            disabled={enviandoVoto !== null || tempoVotacaoEsgotado}
-                            onClick={() => handleVotar('NAO')}
-                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:opacity-60 ${
+                            disabled={
+                              enviandoVoto !== null ||
+                              tempoVotacaoEsgotado ||
+                              meuVotoAtual === 'NAO'
+                            }
+                            onClick={() => void handleVotar('NAO')}
+                            className={`w-full min-h-[64px] rounded-2xl px-5 py-4 font-extrabold text-base tracking-wide transition flex items-center justify-between border-2 disabled:cursor-default ${
                               meuVotoAtual === 'NAO'
                                 ? 'bg-rose-600 text-white border-rose-800 shadow-lg ring-4 ring-rose-500/25'
-                                : 'bg-rose-50/90 text-rose-950 border-rose-400 hover:bg-rose-100'
+                                : 'bg-rose-50/90 text-rose-950 border-rose-400 hover:bg-rose-100 disabled:opacity-60'
                             }`}
                           >
                             <span className="flex items-center gap-3">
                               <ThumbsDown className="w-5 h-5" />
-                              NÃO (REJEITAR)
+                              {enviandoVoto === 'NAO' ? 'Registrando...' : 'NÃO (REJEITAR)'}
                             </span>
                             {meuVotoAtual === 'NAO' ? (
                               <span className="text-xs uppercase px-2.5 py-1 rounded-full bg-white/20 font-bold">
-                                Voto Confirmado ✓
+                                Confirmado ✓
                               </span>
                             ) : null}
                           </button>
@@ -1109,7 +1271,10 @@ export default function PaginaMorador() {
                               {feedbackVoto ??
                                 `Seu voto [${
                                   meuVotoAtual === 'NAO' ? 'NÃO' : 'SIM'
-                                }] está computado no telão! Enquanto o tempo estiver aberto, você pode alterá-lo.`}
+                                }] está computado para ${formatarUnidadeTelaoCompacta(
+                                  unidadeAtivaSessao.bloco,
+                                  unidadeAtivaSessao.apartamento
+                                )}! Enquanto a votação estiver aberta, você pode alterá-lo tocando na outra opção.`}
                             </span>
                           </div>
                         ) : null}
@@ -1123,34 +1288,24 @@ export default function PaginaMorador() {
         )}
 
         {/* ===================================================================
-            ESPELHO DO TELÃO EM TEMPO REAL NO CELULAR (Placar + Mapa Bxx | Axxx)
+            PLACAR AGREGADO AO VIVO (Leve, Zero PII, sem lista de terceiros)
            =================================================================== */}
         <section
-          aria-label="Espelho em Tempo Real do Telão"
+          aria-label="Placar Agregado ao Vivo"
           className="rounded-2xl bg-white p-5 shadow-sm border border-slate-200 space-y-4"
         >
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-milano-gold-dark flex items-center gap-1">
-                <Eye className="w-3.5 h-3.5" />
-                Espelho do Telão no Celular
-              </span>
-              <h3 className="text-base font-extrabold text-slate-900">
-                {pautaAberta
-                  ? `Apuração ao Vivo • Pauta #${pautaAberta.ordem}`
-                  : ultimaPautaEncerrada
-                    ? `Resultado Final • Pauta #${ultimaPautaEncerrada.ordem}`
-                    : 'Unidades Presentes Credenciadas'}
-              </h3>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setMostrarEspelhoVotos((v) => !v)}
-              className="text-xs font-bold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg bg-slate-100"
-            >
-              {mostrarEspelhoVotos ? 'Ocultar Grade' : 'Ver Grade'}
-            </button>
+          <div>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-milano-gold-dark flex items-center gap-1">
+              <Eye className="w-3.5 h-3.5" />
+              Apuração Agregada em Tempo Real
+            </span>
+            <h3 className="text-base font-extrabold text-slate-900">
+              {pautaAberta
+                ? `Placar ao Vivo • Pauta #${pautaAberta.ordem}`
+                : ultimaPautaEncerrada
+                  ? `Resultado Final • Pauta #${ultimaPautaEncerrada.ordem}`
+                  : 'Aguardando Abertura da Primeira Pauta'}
+            </h3>
           </div>
 
           {placarAoVivo && pautaEmFoco ? (
@@ -1162,7 +1317,7 @@ export default function PaginaMorador() {
               const empatou = mostrarVencedor && placarAoVivo.vencedor === 'EMPATE';
 
               return (
-                <div className="space-y-2.5 tabular-nums">
+                <div className="space-y-3 tabular-nums">
                   <p className="text-xs font-semibold text-slate-700 line-clamp-2">
                     {pautaEmFoco.titulo}
                   </p>
@@ -1256,121 +1411,60 @@ export default function PaginaMorador() {
                       </p>
                     </div>
                   </div>
+
                   {empatou ? (
                     <p className="text-[11px] font-bold text-amber-800 text-center">
                       Empate entre SIM ({placarAoVivo.sim}) e NÃO ({placarAoVivo.nao})
                     </p>
                   ) : null}
+
+                  {/* Resumo privado exclusivo dos votos das unidades da própria sessão */}
+                  {sessao && sessao.unidadesAutorizadas.length > 0 ? (
+                    <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Registro da(s) Sua(s) Unidade(s) Nesta Pauta
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {sessao.unidadesAutorizadas.map((u) => {
+                          const ch = chaveUnidade(u.bloco, u.apartamento);
+                          const v = mapaMeusVotosPautaFoco.get(ch);
+                          return (
+                            <span
+                              key={ch}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs font-bold ${
+                                v === 'SIM'
+                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                                  : v === 'NAO'
+                                    ? 'bg-rose-50 border-rose-300 text-rose-900'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                              }`}
+                            >
+                              {formatarUnidadeTelaoCompacta(u.bloco, u.apartamento)}:
+                              <span>{v === 'SIM' ? 'SIM' : v === 'NAO' ? 'NÃO' : 'Não votou'}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               );
             })()
-          ) : null}
-
-          {mostrarEspelhoVotos ? (
-            <div className="space-y-3 pt-1">
-              <div className="flex flex-wrap gap-1.5">
-                {sessao ? (
-                  <button
-                    type="button"
-                    onClick={() => setFiltroEspelho('MEU_BLOCO')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                      filtroEspelho === 'MEU_BLOCO'
-                        ? 'bg-[#0C0C0D] text-milano-gold'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    Meu Bloco (B{formatarBloco(sessao.bloco)})
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setFiltroEspelho('VOTARAM')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                    filtroEspelho === 'VOTARAM'
-                      ? 'bg-[#0C0C0D] text-milano-gold'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Já Votaram ({placarAoVivo?.totalVotosRegistrados ?? 0})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFiltroEspelho('PRESENTES_ESCOPO')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                    filtroEspelho === 'PRESENTES_ESCOPO' ||
-                    (!sessao && filtroEspelho === 'MEU_BLOCO')
-                      ? 'bg-[#0C0C0D] text-milano-gold'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  Presentes no Escopo ({resumoQuorum.presentesNoEscopo})
-                </button>
-              </div>
-
-              {unidadesEspelhoMobile.length === 0 ? (
-                <p className="text-xs text-slate-500 py-4 text-center">
-                  Nenhuma unidade encontrada para este filtro no momento.
-                </p>
-              ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-72 overflow-y-auto pr-1 custom-scrollbar">
-                  {unidadesEspelhoMobile.map((u: PresencaPublica) => {
-                    const voto = mapaVotosPautaEmFoco.get(
-                      chaveUnidade(u.bloco, u.apartamento)
-                    );
-                    const ehMinha =
-                      sessao?.bloco === u.bloco &&
-                      sessao?.apartamento === u.apartamento;
-
-                    let corCard = 'bg-amber-50 border-amber-300 text-amber-950';
-                    if (voto === 'SIM') {
-                      corCard = 'bg-emerald-600 border-emerald-700 text-white';
-                    } else if (voto === 'NAO') {
-                      corCard = 'bg-rose-600 border-rose-700 text-white';
-                    }
-
-                    return (
-                      <div
-                        key={u.id}
-                        className={`rounded-xl border p-2 text-center transition ${corCard} ${
-                          ehMinha ? 'ring-2 ring-[#0C0C0D] ring-offset-1' : ''
-                        }`}
-                      >
-                        <div className="font-mono font-extrabold text-xs tabular-nums">
-                          {formatarUnidadeTelaoCompacta(u.bloco, u.apartamento)}
-                        </div>
-                        <div className="mt-0.5 flex items-center justify-center gap-1 flex-wrap">
-                          {u.is_construtora ? (
-                            <span className="px-1 py-0.2 rounded bg-black/20 text-[9px] font-bold uppercase">
-                              CONST.
-                            </span>
-                          ) : u.com_procuracao ? (
-                            <span className="px-1 py-0.2 rounded bg-amber-500/30 border border-amber-600/40 text-[9px] font-extrabold uppercase">
-                              PROC.
-                            </span>
-                          ) : null}
-                          <span className="text-[10px] font-bold uppercase">
-                            {voto === 'NAO'
-                              ? 'NÃO'
-                              : voto === 'SIM'
-                                ? 'SIM'
-                                : 'ABST / PRES.'}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : null}
+          ) : (
+            <p className="text-xs text-slate-600 leading-relaxed">
+              O placar em tempo real aparecerá aqui automaticamente assim que a Mesa Diretora abrir
+              a pauta. A visualização detalhada por bloco e apartamento está disponível no Telão da
+              Assembleia.
+            </p>
+          )}
         </section>
       </main>
 
       <footer className="py-4 text-center text-[11px] text-slate-500 border-t border-slate-200/70 bg-white/60">
         <div className="max-w-xl mx-auto px-4 flex items-center justify-between">
           <span>Milano Condomínio Club</span>
-          <span className="inline-flex items-center gap-1">
-            <Users className="w-3.5 h-3.5" /> {presencas.length}/544 presentes
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Users className="w-3.5 h-3.5" /> {contadores.total}/544 presentes
           </span>
         </div>
       </footer>

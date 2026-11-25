@@ -144,6 +144,9 @@ export default function PaginaTelao() {
     pautaAberta,
     ultimaPautaEncerrada,
     votos,
+    contadores,
+    serverOffsetMs,
+    erroConexao,
     statusConexao,
   } = useAssembleiaPublicRealtime('telao');
 
@@ -153,10 +156,10 @@ export default function PaginaTelao() {
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      setAgoraMs(Date.now());
+      setAgoraMs(Date.now() + serverOffsetMs);
     }, 1000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [serverOffsetMs]);
 
   const alternarMaximizarPainel = useCallback(() => {
     setPainelMaximizado((atual) => {
@@ -209,33 +212,16 @@ export default function PaginaTelao() {
 
   // Contadores de presença por Fase, Confirmados Portaria, Conectados Online e Procurações
   const contadoresPresenca = useMemo(() => {
-    let fase1 = 0;
-    let fase2 = 0;
-    let construtora = 0;
-    let confirmadosPortaria = 0;
-    let conectadosOnline = 0;
-    let comProcuracao = 0;
-    for (const p of presencas) {
-      if (p.fase === 1) fase1 += 1;
-      else if (p.fase === 2) fase2 += 1;
-      if (p.is_construtora) {
-        construtora += 1;
-      } else {
-        if (p.confirmado_portaria !== false) confirmadosPortaria += 1;
-        if (p.online_conectado) conectadosOnline += 1;
-        if (p.com_procuracao) comProcuracao += 1;
-      }
-    }
     return {
-      total: presencas.length,
-      fase1,
-      fase2,
-      construtora,
-      confirmadosPortaria,
-      conectadosOnline,
-      comProcuracao,
+      total: contadores.total,
+      fase1: contadores.fase1,
+      fase2: contadores.fase2,
+      construtora: contadores.construtora,
+      confirmadosPortaria: contadores.confirmados_portaria,
+      conectadosOnline: contadores.conectados_online,
+      comProcuracao: contadores.com_procuracao,
     };
-  }, [presencas]);
+  }, [contadores]);
 
   const resumoQuorum = useMemo(
     () => calcularQuorumEscopo(escopoAtivo, presencas, config),
@@ -514,6 +500,18 @@ export default function PaginaTelao() {
           ÁREA PRINCIPAL: TOPO COM CRONÔMETRO DE VOTAÇÃO + PLACAR + PAINEL AGRUPADO POR BLOCO
          ===================================================================== */}
       <main className="flex-1 flex flex-col min-w-0 p-2 sm:p-2.5 2xl:p-3.5 gap-2 sm:gap-2.5 xl:overflow-hidden">
+        {erroConexao ? (
+          <div
+            role="alert"
+            className="rounded-xl bg-amber-950/90 border border-amber-400/60 px-3.5 py-2 text-xs font-bold text-amber-200 flex items-center justify-between gap-2 shrink-0"
+          >
+            <span className="flex items-center gap-2">
+              <WifiOff className="w-4 h-4 text-amber-300 shrink-0 animate-pulse" />
+              Oscilação na conexão com o servidor — tentando reconectar automaticamente ({erroConexao})
+            </span>
+          </div>
+        ) : null}
+
         {/* Topo Compacto: Pauta Ativa + Cronômetro Regressivo (2 min) + Placar em Linha */}
         <section className="rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3.5 py-2.5 2xl:px-5 2xl:py-3 shadow-lg shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
