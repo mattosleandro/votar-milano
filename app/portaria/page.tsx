@@ -107,6 +107,7 @@ export default function PaginaPortaria() {
     carregandoInicial,
     erroConexao,
     statusConexao,
+    realtimeAtivo,
     recarregarTudo,
     confirmarPresencaPortaria,
     removerPresencaPortaria,
@@ -279,17 +280,17 @@ export default function PaginaPortaria() {
           <div className="flex items-center gap-2">
             <span
               className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-bold ${
-                statusConexao === 'AO_VIVO'
+                statusConexao === 'AO_VIVO' && realtimeAtivo
                   ? 'border-emerald-500/40 bg-emerald-950/60 text-emerald-300'
                   : 'border-amber-500/40 bg-amber-950/60 text-amber-300'
               }`}
             >
-              {statusConexao === 'AO_VIVO' ? (
+              {statusConexao === 'AO_VIVO' && realtimeAtivo ? (
                 <Wifi className="h-3.5 w-3.5 text-emerald-400" />
               ) : (
                 <WifiOff className="h-3.5 w-3.5" />
               )}
-              {statusConexao === 'AO_VIVO' ? 'Conectado' : 'Reconectando'}
+              {statusConexao === 'AO_VIVO' && realtimeAtivo ? 'Tempo Real' : 'Auto-Sync'}
             </span>
 
             <button

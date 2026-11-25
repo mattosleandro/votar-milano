@@ -9,6 +9,8 @@ import {
 import { extrairAssinaturaFisicaAparelho } from './deviceTelemetry';
 import {
   AssembleiaConfig,
+  AuditoriaVotoItem,
+  OperacaoAssembleiaItem,
   PautaAssembleia,
   PresencaAdmin,
   UnidadeCadastradaAdmin,
@@ -502,4 +504,94 @@ export function baixarModeloImportacaoUnidadesCsv(): void {
     ['01', '101', 'CONSTRUTORA MILANO', 'CONSTRUTORA', 'CONSTRUTORA', 'Unidade nao entregue'],
   ];
   dispararDownloadCsv('modelo-importacao-condominos-milano.csv', [cabecalho, ...exemplos]);
+}
+
+export function exportarTrilhaAuditoriaOperacoesCsv(params: {
+  tituloAssembleia: string;
+  operacoes: readonly OperacaoAssembleiaItem[];
+  pautas: readonly PautaAssembleia[];
+}): void {
+  const mapaPautas = new Map<string, PautaAssembleia>();
+  for (const p of params.pautas) mapaPautas.set(p.id, p);
+
+  const cabecalho = [
+    'ID Evento',
+    'Data/Hora (MS)',
+    'Operação',
+    'E-mail Operador',
+    'Perfil (Role)',
+    'Pauta Relacionada',
+    'Justificativa Formal',
+    'Detalhes JSON / Hash SHA-256',
+  ];
+
+  const linhas = params.operacoes.map((op) => {
+    const pauta = op.pauta_id ? mapaPautas.get(op.pauta_id) : undefined;
+    return [
+      String(op.id),
+      formatarDataHoraLocal(op.recorded_at),
+      op.operacao,
+      op.actor_email || '',
+      op.actor_role || '',
+      pauta ? `#${pauta.ordem} - ${pauta.titulo}` : op.pauta_id || '',
+      op.justificativa || '',
+      JSON.stringify(op.detalhes || {}),
+    ];
+  });
+
+  dispararDownloadCsv(`milano-auditoria-operacoes-${sufixoArquivoDataHora()}.csv`, [
+    ['TRILHA IMUTÁVEL DE OPERAÇÕES — ' + params.tituloAssembleia],
+    cabecalho,
+    ...linhas,
+  ]);
+}
+
+export function exportarTrilhaAuditoriaVotosCsv(params: {
+  tituloAssembleia: string;
+  votosAuditoria: readonly AuditoriaVotoItem[];
+  pautas: readonly PautaAssembleia[];
+}): void {
+  const mapaPautas = new Map<string, PautaAssembleia>();
+  for (const p of params.pautas) mapaPautas.set(p.id, p);
+
+  const cabecalho = [
+    'ID Evento',
+    'Data/Hora (MS)',
+    'Pauta',
+    'Rodada',
+    'Unidade',
+    'Ação',
+    'Voto Anterior',
+    'Voto Novo',
+    'Construtora',
+    'Role',
+    'IP',
+    'Aparelho',
+    'Idempotency Key',
+  ];
+
+  const linhas = params.votosAuditoria.map((v) => {
+    const pauta = mapaPautas.get(v.pauta_id);
+    return [
+      String(v.id),
+      formatarDataHoraLocal(v.recorded_at),
+      pauta ? `#${pauta.ordem} - ${pauta.titulo}` : v.pauta_id,
+      `Rodada ${v.rodada}`,
+      `B${formatarBloco(v.bloco)} | A${v.apartamento}`,
+      v.acao,
+      v.voto_anterior || '',
+      v.voto_novo || '',
+      v.is_construtora ? 'SIM' : 'NÃO',
+      v.actor_role || '',
+      v.ip_address || '',
+      v.device_name || '',
+      v.idempotency_key || '',
+    ];
+  });
+
+  dispararDownloadCsv(`milano-auditoria-eventos-votos-${sufixoArquivoDataHora()}.csv`, [
+    ['TRILHA IMUTÁVEL DE EVENTOS DE VOTO — ' + params.tituloAssembleia],
+    cabecalho,
+    ...linhas,
+  ]);
 }

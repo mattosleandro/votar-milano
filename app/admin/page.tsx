@@ -20,12 +20,14 @@ import {
   RefreshCw,
   Settings2,
   ShieldAlert,
+  ShieldCheck,
   UserCheck,
   Wifi,
   WifiOff,
   X,
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
+import { AdminAuditoriaSection } from '@/components/admin/AdminAuditoriaSection';
 import { AdminCadastroUnidadesSection } from '@/components/admin/AdminCadastroUnidadesSection';
 import { AdminConstrutoraSection } from '@/components/admin/AdminConstrutoraSection';
 import { AdminConvocacoesSection } from '@/components/admin/AdminConvocacoesSection';
@@ -47,7 +49,8 @@ type AbaAdmin =
   | 'PAUTAS'
   | 'CONSTRUTORA'
   | 'INADIMPLENTES'
-  | 'PRESENCAS_CSV';
+  | 'PRESENCAS_CSV'
+  | 'AUDITORIA';
 
 interface NotificacaoAdmin extends ResultadoOperacaoAdmin {
   id: number;
@@ -140,6 +143,8 @@ export default function PaginaAdminMesa() {
     pautas,
     votos,
     historicoAssembleias,
+    operacoesAuditoria,
+    votosAuditoria,
     pautaAberta,
     carregandoInicial,
     erroConexao,
@@ -412,6 +417,12 @@ export default function PaginaAdminMesa() {
       rotulo: '7. Presenças, Aparelhos & CSV',
       icone: <FileSpreadsheet className="h-4 w-4" />,
       contador: contadores.totalPresentes,
+    },
+    {
+      id: 'AUDITORIA',
+      rotulo: '8. Auditoria Imutável',
+      icone: <ShieldCheck className="h-4 w-4" />,
+      contador: operacoesAuditoria.length + votosAuditoria.length,
     },
   ];
 
@@ -793,6 +804,15 @@ export default function PaginaAdminMesa() {
                 onAtualizarPresenca={atualizarPresencaMesa}
                 onRemoverPresenca={removerPresencaMesa}
                 onNotificar={notificar}
+              />
+            )}
+
+            {abaAtiva === 'AUDITORIA' && (
+              <AdminAuditoriaSection
+                tituloAssembleia={assembleiaAtual?.titulo || 'Assembleia Geral Milano'}
+                pautas={pautas}
+                operacoes={operacoesAuditoria}
+                votosAuditoria={votosAuditoria}
               />
             )}
           </>

@@ -88,6 +88,7 @@ export default function PaginaMorador() {
     placarRpc,
     contadores,
     serverOffsetMs,
+    realtimeAtivo,
     carregandoInicial,
     erroConexao,
     statusConexao,
@@ -546,13 +547,18 @@ export default function PaginaMorador() {
             </span>
 
             <span
+              title={
+                realtimeAtivo
+                  ? 'Conectado em tempo real (Broadcast)'
+                  : 'Modo Contingência: sincronização automática ativa'
+              }
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide border ${
-                statusConexao === 'AO_VIVO'
+                statusConexao === 'AO_VIVO' && realtimeAtivo
                   ? 'bg-emerald-950/80 text-emerald-300 border-emerald-500/40'
                   : 'bg-amber-950/80 text-amber-300 border-amber-500/40'
               }`}
             >
-              {statusConexao === 'AO_VIVO' ? (
+              {statusConexao === 'AO_VIVO' && realtimeAtivo ? (
                 <>
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   <Wifi className="w-3 h-3" />
@@ -561,7 +567,7 @@ export default function PaginaMorador() {
               ) : (
                 <>
                   <WifiOff className="w-3 h-3 animate-pulse" />
-                  SYNC
+                  AUTO-SYNC
                 </>
               )}
             </span>
@@ -1151,7 +1157,8 @@ export default function PaginaMorador() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 text-emerald-900 text-xs font-extrabold uppercase tracking-wider">
                         <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-                        Pauta #{pautaAberta.ordem} Aberta para Votação
+                        Pauta #{pautaAberta.ordem}
+                        {(pautaAberta.rodada ?? 1) > 1 ? ` • Rodada ${pautaAberta.rodada}` : ''} Aberta
                       </span>
                       <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-800 text-xs font-bold">
                         {metaPauta.rotuloCurto}

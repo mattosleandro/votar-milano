@@ -3,37 +3,49 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
+  BarChart3,
   Building2,
   CheckCircle2,
-  Clock,
   FileCheck2,
+  Filter,
   LayoutGrid,
   Maximize2,
   Minimize2,
+  Search,
   ShieldAlert,
-  Timer,
   Users,
   Wifi,
   WifiOff,
+  X,
 } from 'lucide-react';
 import { MilanoLogo } from '@/components/MilanoLogo';
+import {
+  TelaoRelogioConvocacao,
+  TelaoTimerVotacao,
+} from '@/components/telao/TelaoClockWidgets';
 import { useAssembleiaPublicRealtime } from '@/hooks/useAssembleiaPublicRealtime';
 import {
   calcularPlacarPauta,
   calcularQuorumEscopo,
   chaveUnidade,
   formatarBloco,
-  formatarSegundosMMSS,
   formatarUnidadeTelaoCompacta,
-  obterEstadoRelogioCampoGrande,
+  obterInfoBloco,
   obterMetadadosEscopo,
   TODOS_APARTAMENTOS,
   unidadePertenceAoEscopo,
 } from '@/lib/condominio';
 import { APP_PUBLIC_URL } from '@/lib/supabase';
-import { OpcaoVoto, PresencaPublica } from '@/lib/types';
+import {
+  FaseCondominio,
+  ModuloCondominio,
+  OpcaoVoto,
+  PresencaPublica,
+} from '@/lib/types';
 
-type ModoVisualizacaoGrade = 'TODOS_OS_BLOCOS' | 'PRESENTES_APTAS';
+type AbaTelao = 'PRESENTES_POR_BLOCO' | 'TODOS_OS_BLOCOS' | 'PLACAR_CONSOLIDADO';
+type FiltroFaseTelao = 'TODAS' | FaseCondominio;
+type FiltroModuloTelao = 'TODOS' | ModuloCondominio;
 
 interface CelulaUnidadeTelaoProps {
   bloco: number;
@@ -58,12 +70,6 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
   mostrarBlocoPrefix = false,
   expandido = false,
 }: CelulaUnidadeTelaoProps) {
-  // Cores semânticas de alto contraste:
-  // - SIM: Verde Esmeralda
-  // - NÃO: Vermelho Rubi
-  // - CONECTADO (Validou CPF no site / Construtora): Azul Celeste
-  // - CONFIRMADO (Liberado na Portaria, aguardando abrir o site): Violeta / Roxo
-  // - AUSENTE: Grafite Escuro discreto
   let classesCor = 'bg-slate-900/65 border-slate-800/90 text-slate-500';
 
   if (voto === 'SIM') {
@@ -97,14 +103,14 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
       title={tituloTooltip}
       className={`relative rounded border transition-colors duration-150 flex items-center justify-center gap-0.5 text-center select-none overflow-hidden ${classesCor} ${destaqueEspecial} ${
         expandido
-          ? 'px-2 py-2 min-h-[42px]'
+          ? 'px-2 py-2 min-h-[38px]'
           : 'px-0.5 py-0.5 min-h-[20px] sm:min-h-[22px] xl:min-h-[19px] 2xl:min-h-[22px]'
       }`}
     >
       <span
         className={`font-mono font-extrabold tracking-tight tabular-nums leading-none whitespace-nowrap ${
           expandido
-            ? 'text-xs xl:text-sm 2xl:text-base'
+            ? 'text-xs sm:text-sm 2xl:text-base'
             : 'text-[10px] sm:text-[11px] xl:text-[10px] 2xl:text-xs'
         }`}
       >
@@ -113,7 +119,6 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
           : String(apartamento)}
       </span>
 
-      {/* Marca visual identificando unidade representada por Procuração */}
       {comProcuracao && (
         <span
           title="Unidade representada por Procuração"
@@ -127,7 +132,6 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
         </span>
       )}
 
-      {/* Marca visual identificando Construtora no modo expandido */}
       {isConstrutora && expandido && (
         <span className="inline-flex items-center justify-center rounded bg-milano-gold text-[#0C0C0D] font-black leading-none px-1.5 py-0.5 text-[10px] ml-1 shrink-0">
           CONST
@@ -136,6 +140,30 @@ const CelulaUnidadeTelao = memo(function CelulaUnidadeTelao({
     </div>
   );
 });
+
+/** Interpreta texto de busca livre do telão (ex.: "26", "B26", "101", "26 101", "B26 | A101") */
+function parseBuscaBlocoApto(texto: string): {
+  blocoFiltro: number | null;
+  aptoFiltro: number | null;
+  termoLivre: string;
+} {
+  const limpo = texto.trim().toLowerCase();
+  if (!limpo) return { blocoFiltro: null, aptoFiltro: null, termoLivre: '' };
+
+  const numeros = limpo.match(/\d+/g)?.map(Number) ?? [];
+  let blocoFiltro: number | null = null;
+  let aptoFiltro: number | null = null;
+
+  for (const n of numeros) {
+    if (n >= 101 && n <= 404 && aptoFiltro === null) {
+      aptoFiltro = n;
+    } else if (n >= 1 && n <= 34 && blocoFiltro === null) {
+      blocoFiltro = n;
+    }
+  }
+
+  return { blocoFiltro, aptoFiltro, termoLivre: limpo };
+}
 
 export default function PaginaTelao() {
   const {
@@ -146,20 +174,53 @@ export default function PaginaTelao() {
     votos,
     contadores,
     serverOffsetMs,
+    realtimeAtivo,
     erroConexao,
     statusConexao,
   } = useAssembleiaPublicRealtime('telao');
 
-  const [modoGrade, setModoGrade] = useState<ModoVisualizacaoGrade>('TODOS_OS_BLOCOS');
+  const [abaAtiva, setAbaAtiva] = useState<AbaTelao>('PRESENTES_POR_BLOCO');
+  const [filtroFase, setFiltroFase] = useState<FiltroFaseTelao>('TODAS');
+  const [filtroModulo, setFiltroModulo] = useState<FiltroModuloTelao>('TODOS');
+  const [buscaUnidade, setBuscaUnidade] = useState('');
   const [painelMaximizado, setPainelMaximizado] = useState(false);
-  const [agoraMs, setAgoraMs] = useState<number>(() => Date.now());
+  const [timerEsgotado, setTimerEsgotado] = useState(false);
 
+  // Screen Wake Lock API: mantém a tela do notebook/datashow sempre acesa durante a assembleia
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      setAgoraMs(Date.now() + serverOffsetMs);
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [serverOffsetMs]);
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    let ativo = true;
+
+    const solicitarWakeLock = async () => {
+      if (!ativo || typeof navigator === 'undefined') return;
+      const nav = navigator as Navigator & {
+        wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> };
+      };
+      if (!nav.wakeLock) return;
+      try {
+        wakeLock = await nav.wakeLock.request('screen');
+      } catch {
+        // Ignora se o navegador ou política do SO não conceder wake lock
+      }
+    };
+
+    void solicitarWakeLock();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void solicitarWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      ativo = false;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (wakeLock) {
+        void wakeLock.release().catch(() => {});
+      }
+    };
+  }, []);
 
   const alternarMaximizarPainel = useCallback(() => {
     setPainelMaximizado((atual) => {
@@ -173,44 +234,33 @@ export default function PaginaTelao() {
     });
   }, []);
 
-  // Estado do Relógio e Cronômetro para 1ª / 2ª Convocação
-  const estadoRelogio = useMemo(
-    () => obterEstadoRelogioCampoGrande(config, agoraMs),
-    [agoraMs, config]
-  );
+  const limparFiltros = useCallback(() => {
+    setFiltroFase('TODAS');
+    setFiltroModulo('TODOS');
+    setBuscaUnidade('');
+  }, []);
 
-  // Contador regressivo de deliberação controlado pelo Admin (padrão 2 min = 120s)
-  const estadoTimerVotacao = useMemo(() => {
-    const duracaoBase = Math.max(0, Number(config.timer_duration_seconds ?? 120));
-    if (config.timer_running && config.timer_started_at) {
-      const inicioMs = Date.parse(config.timer_started_at);
-      if (!Number.isNaN(inicioMs)) {
-        const decorridos = Math.max(0, Math.floor((agoraMs - inicioMs) / 1000));
-        const restantes = Math.max(0, duracaoBase - decorridos);
-        return {
-          rodando: true,
-          esgotado: restantes === 0,
-          alertaFinal: restantes > 0 && restantes <= 30,
-          segundosRestantes: restantes,
-          formatado: formatarSegundosMMSS(restantes),
-        };
-      }
-    }
-    return {
-      rodando: false,
-      esgotado: false,
-      alertaFinal: false,
-      segundosRestantes: duracaoBase,
-      formatado: formatarSegundosMMSS(duracaoBase),
-    };
-  }, [agoraMs, config.timer_duration_seconds, config.timer_running, config.timer_started_at]);
+  const handleSelecionarFase = useCallback((fase: FiltroFaseTelao) => {
+    setFiltroFase(fase);
+    // Ajusta módulo se incompatível com a fase escolhida
+    setFiltroModulo((modAtual) => {
+      if (fase === 'TODAS' || modAtual === 'TODOS') return modAtual;
+      if (fase === 1 && (modAtual === 3 || modAtual === 4)) return 'TODOS';
+      if (fase === 2 && (modAtual === 1 || modAtual === 2)) return 'TODOS';
+      return modAtual;
+    });
+  }, []);
 
-  // Pauta exibida no projetor: prioriza a pauta aberta; se não houver, mostra a última encerrada
+  const handleSelecionarModulo = useCallback((mod: FiltroModuloTelao) => {
+    setFiltroModulo(mod);
+    if (mod === 1 || mod === 2) setFiltroFase(1);
+    else if (mod === 3 || mod === 4) setFiltroFase(2);
+  }, []);
+
   const pautaExibida = pautaAberta ?? ultimaPautaEncerrada;
   const escopoAtivo = pautaExibida ? pautaExibida.escopo : config.escopo_assembleia;
   const metaEscopo = useMemo(() => obterMetadadosEscopo(escopoAtivo), [escopoAtivo]);
 
-  // Contadores de presença por Fase, Confirmados Portaria, Conectados Online e Procurações
   const contadoresPresenca = useMemo(() => {
     return {
       total: contadores.total,
@@ -233,7 +283,6 @@ export default function PaginaTelao() {
     return calcularPlacarPauta(pautaExibida, presencas, votos);
   }, [pautaExibida, presencas, votos]);
 
-  // Mapa O(1) de presenças (Zero PII)
   const mapaPresencas = useMemo(() => {
     const mapa = new Map<string, PresencaPublica>();
     for (const p of presencas) {
@@ -242,23 +291,103 @@ export default function PaginaTelao() {
     return mapa;
   }, [presencas]);
 
-  // Mapa O(1) de votos da pauta exibida
   const mapaVotosPauta = useMemo(() => {
     const mapa = new Map<string, OpcaoVoto>();
     if (!pautaExibida) return mapa;
+    const rodadaAtiva = pautaExibida.rodada ?? 1;
     for (const v of votos) {
-      if (v.pauta_id === pautaExibida.id) {
+      if (v.pauta_id === pautaExibida.id && (v.rodada ?? 1) === rodadaAtiva) {
         mapa.set(chaveUnidade(v.bloco, v.apartamento), v.voto);
       }
     }
     return mapa;
   }, [pautaExibida, votos]);
 
-  // Unidades presentes aptas dentro do escopo ativo
-  const unidadesPresentesAptas = useMemo(
-    () => presencas.filter((p) => unidadePertenceAoEscopo(p, escopoAtivo)),
-    [escopoAtivo, presencas]
-  );
+  // Aplicação dos filtros interativos do /telao (Fase, Módulo e Busca Bloco/Apartamento)
+  const buscaParsed = useMemo(() => parseBuscaBlocoApto(buscaUnidade), [buscaUnidade]);
+  const temFiltroAtivo =
+    filtroFase !== 'TODAS' || filtroModulo !== 'TODOS' || buscaUnidade.trim().length > 0;
+
+  const blocosFiltrados = useMemo(() => {
+    return metaEscopo.blocos.filter((bloco) => {
+      const info = obterInfoBloco(bloco);
+      if (filtroFase !== 'TODAS' && info.fase !== filtroFase) return false;
+      if (filtroModulo !== 'TODOS' && info.modulo !== filtroModulo) return false;
+      if (buscaParsed.blocoFiltro !== null && bloco !== buscaParsed.blocoFiltro) return false;
+      return true;
+    });
+  }, [buscaParsed.blocoFiltro, filtroFase, filtroModulo, metaEscopo.blocos]);
+
+  const apartamentosFiltrados = useMemo(() => {
+    if (buscaParsed.aptoFiltro === null) return TODOS_APARTAMENTOS;
+    return TODOS_APARTAMENTOS.filter((a) => a === buscaParsed.aptoFiltro);
+  }, [buscaParsed.aptoFiltro]);
+
+  // Unidades presentes aptas no escopo + filtros selecionados
+  const unidadesPresentesFiltradas = useMemo(() => {
+    return presencas.filter((p) => {
+      if (!unidadePertenceAoEscopo(p, escopoAtivo)) return false;
+      if (filtroFase !== 'TODAS' && p.fase !== filtroFase) return false;
+      if (filtroModulo !== 'TODOS' && p.modulo !== filtroModulo) return false;
+      if (buscaParsed.blocoFiltro !== null && p.bloco !== buscaParsed.blocoFiltro) return false;
+      if (buscaParsed.aptoFiltro !== null && p.apartamento !== buscaParsed.aptoFiltro) return false;
+      return true;
+    });
+  }, [
+    buscaParsed.aptoFiltro,
+    buscaParsed.blocoFiltro,
+    escopoAtivo,
+    filtroFase,
+    filtroModulo,
+    presencas,
+  ]);
+
+  // Agrupamento de presentes por bloco (para a aba "Presentes por Bloco" solicitada!)
+  const blocosApenasPresentes = useMemo(() => {
+    const grupos: {
+      bloco: number;
+      fase: FaseCondominio;
+      modulo: ModuloCondominio;
+      unidades: PresencaPublica[];
+      votosSim: number;
+      votosNao: number;
+      procuracoes: number;
+    }[] = [];
+
+    for (const bloco of blocosFiltrados) {
+      const unidadesDoBloco: PresencaPublica[] = [];
+      let votosSim = 0;
+      let votosNao = 0;
+      let procuracoes = 0;
+
+      for (const apto of apartamentosFiltrados) {
+        const ch = chaveUnidade(bloco, apto);
+        const pr = mapaPresencas.get(ch);
+        if (pr) {
+          unidadesDoBloco.push(pr);
+          if (pr.com_procuracao) procuracoes += 1;
+          const v = mapaVotosPauta.get(ch);
+          if (v === 'SIM') votosSim += 1;
+          else if (v === 'NAO') votosNao += 1;
+        }
+      }
+
+      if (unidadesDoBloco.length > 0) {
+        const info = obterInfoBloco(bloco);
+        grupos.push({
+          bloco,
+          fase: info.fase,
+          modulo: info.modulo,
+          unidades: unidadesDoBloco,
+          votosSim,
+          votosNao,
+          procuracoes,
+        });
+      }
+    }
+
+    return grupos;
+  }, [apartamentosFiltrados, blocosFiltrados, mapaPresencas, mapaVotosPauta]);
 
   const dominioLegivel = useMemo(() => {
     try {
@@ -268,42 +397,63 @@ export default function PaginaTelao() {
     }
   }, []);
 
-  // Classes de Grid 100% Responsivas para Datashow (4:3, 16:10, 16:9), Tablets e Monitores
   const classesGridResponsivoBlocos = useMemo(() => {
-    const qtd = metaEscopo.blocos.length;
+    const qtd = blocosFiltrados.length;
     if (qtd > 20) {
-      // 34 blocos: adapta suavemente de 1/2/3/4 colunas (celular/tablet) até 6/7 colunas (monitores/datashow)
       return painelMaximizado
         ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7'
         : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7';
     }
     if (qtd > 12) {
-      // 16 ou 18 blocos (Fase 1 ou Fase 2)
       return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6';
     }
-    // 7 a 11 blocos (Módulos 1 a 4)
-    return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
-  }, [metaEscopo.blocos.length, painelMaximizado]);
+    if (qtd > 4) {
+      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+    }
+    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+  }, [blocosFiltrados.length, painelMaximizado]);
+
+  const classesGridPresentesPorBloco = useMemo(() => {
+    const qtd = blocosApenasPresentes.length;
+    if (qtd > 20) {
+      return painelMaximizado
+        ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6'
+        : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6';
+    }
+    if (qtd > 10) {
+      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5';
+    }
+    if (qtd > 4) {
+      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
+    }
+    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3';
+  }, [blocosApenasPresentes.length, painelMaximizado]);
+
+  const mostrarVencedor = pautaExibida?.status === 'encerrada' || timerEsgotado;
 
   return (
     <div className="min-h-screen xl:h-screen xl:overflow-hidden bg-slate-950 text-white flex flex-col xl:flex-row">
       {/* =====================================================================
-          BARRA LATERAL ESQUERDA (Responsiva em Tablets / Fixa em Datashow Widescreen)
-          Oculta quando o painel está maximizado em Tela Inteira
+          BARRA LATERAL ESQUERDA (Oculta em Tela Inteira)
          ===================================================================== */}
       {!painelMaximizado && (
         <aside className="w-full xl:w-[285px] 2xl:w-[330px] shrink-0 bg-[#0C0C0D] border-b xl:border-b-0 xl:border-r border-milano-gold/25 p-3 2xl:p-4 flex flex-col justify-between gap-3">
-          {/* Topo: Logo Oficial Branca + Dourada e Status WebSocket */}
+          {/* Topo: Logo Oficial Branca + Dourada e Status WebSocket / Contingência */}
           <div className="flex items-center justify-between gap-2">
             <MilanoLogo variant="dark" className="h-8 2xl:h-9 w-auto" />
             <span
+              title={
+                realtimeAtivo
+                  ? 'Recebendo atualizações instantâneas via WebSocket Broadcast'
+                  : 'Modo Contingência: sincronização HTTP automática ativa'
+              }
               className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
-                statusConexao === 'AO_VIVO'
+                statusConexao === 'AO_VIVO' && realtimeAtivo
                   ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500/40'
                   : 'bg-amber-950/90 text-amber-300 border-amber-500/40'
               }`}
             >
-              {statusConexao === 'AO_VIVO' ? (
+              {statusConexao === 'AO_VIVO' && realtimeAtivo ? (
                 <>
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                   <Wifi className="w-3 h-3" />
@@ -312,53 +462,20 @@ export default function PaginaTelao() {
               ) : (
                 <>
                   <WifiOff className="w-3 h-3 animate-pulse" />
-                  <span>SYNC</span>
+                  <span>AUTO-SYNC</span>
                 </>
               )}
             </span>
           </div>
 
-          {/* Em tablets/telas médias (< xl), organiza os widgets em grade horizontal; em xl+ empilha verticalmente */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-1 gap-2.5 flex-1">
-            {/* Cronômetro de Convocação OU Relógio Local */}
-            <div className="rounded-xl bg-slate-900/95 border border-milano-gold/40 px-3 py-2.5 shadow-md flex flex-col justify-center">
-              {estadoRelogio.emContagemRegressiva ? (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-milano-gold-light">
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-milano-gold animate-pulse" />
-                      Início da {estadoRelogio.alvoConvocacao === 'PRIMEIRA' ? '1ª' : '2ª'}{' '}
-                      Convocação
-                    </span>
-                    <span className="font-mono text-slate-400">
-                      {estadoRelogio.alvoConvocacao === 'PRIMEIRA'
-                        ? config.horario_primeira_convocacao
-                        : config.horario_segunda_convocacao}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline justify-between tabular-nums">
-                    <span className="text-2xl 2xl:text-3xl font-black font-mono text-white tracking-tight">
-                      -{estadoRelogio.textoContagem}
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-400">
-                      {estadoRelogio.horaCampoGrande}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-2 tabular-nums">
-                  <div>
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-milano-gold-light flex items-center gap-1">
-                      <Clock className="w-3 h-3 text-milano-gold" />
-                      Hora Local
-                    </p>
-                    <p className="text-2xl 2xl:text-3xl font-black font-mono text-white tracking-tight mt-0.5">
-                      {estadoRelogio.horaCampoGrande}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* Widget Isolado de Relógio / Cronômetro (não re-renderiza o grid a cada 1s!) */}
+            <TelaoRelogioConvocacao
+              convocacaoAtiva={config.convocacao_ativa}
+              horarioPrimeira={config.horario_primeira_convocacao}
+              horarioSegunda={config.horario_segunda_convocacao}
+              serverOffsetMs={serverOffsetMs}
+            />
 
             {/* QR Code de Alta Nitidez para Projeção */}
             <div className="rounded-2xl bg-slate-900/90 border border-milano-gold/35 p-2.5 2xl:p-3.5 text-center space-y-1.5 shadow-lg flex flex-col items-center justify-center">
@@ -455,7 +572,8 @@ export default function PaginaTelao() {
                     {contadoresPresenca.total}
                   </span>
                   <span className="text-xs font-mono text-slate-400">
-                    / {metaEscopo.totalUnidades} no escopo
+                    / {metaEscopo.totalUnidades} • F1: {contadoresPresenca.fase1} | F2:{' '}
+                    {contadoresPresenca.fase2}
                   </span>
                 </div>
 
@@ -497,7 +615,7 @@ export default function PaginaTelao() {
       )}
 
       {/* =====================================================================
-          ÁREA PRINCIPAL: TOPO COM CRONÔMETRO DE VOTAÇÃO + PLACAR + PAINEL AGRUPADO POR BLOCO
+          ÁREA PRINCIPAL: TOPO COM CRONÔMETRO + PLACAR + PAINEL FILTRÁVEL EM 3 ABAS
          ===================================================================== */}
       <main className="flex-1 flex flex-col min-w-0 p-2 sm:p-2.5 2xl:p-3.5 gap-2 sm:gap-2.5 xl:overflow-hidden">
         {erroConexao ? (
@@ -507,12 +625,12 @@ export default function PaginaTelao() {
           >
             <span className="flex items-center gap-2">
               <WifiOff className="w-4 h-4 text-amber-300 shrink-0 animate-pulse" />
-              Oscilação na conexão com o servidor — tentando reconectar automaticamente ({erroConexao})
+              Modo Contingência: oscilação na conexão com o servidor — sincronizando automaticamente
             </span>
           </div>
         ) : null}
 
-        {/* Topo Compacto: Pauta Ativa + Cronômetro Regressivo (2 min) + Placar em Linha */}
+        {/* Topo Compacto: Pauta Ativa + Cronômetro Isolado + Placar em Linha */}
         <section className="rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3.5 py-2.5 2xl:px-5 2xl:py-3 shadow-lg shrink-0">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {/* Esquerda: Badges e Título da Pauta */}
@@ -536,14 +654,18 @@ export default function PaginaTelao() {
                   </span>
                 )}
 
+                {pautaExibida && (pautaExibida.rodada ?? 1) > 1 ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-400/20 border border-amber-400/60 text-amber-200 text-xs font-black uppercase tracking-wider">
+                    RODADA {pautaExibida.rodada}
+                  </span>
+                ) : null}
+
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-milano-gold text-[#0C0C0D] text-xs font-black uppercase tracking-wide shadow">
                   <Building2 className="w-3.5 h-3.5 shrink-0" />
                   {metaEscopo.badgeTelao}
                 </span>
 
-                {placar &&
-                (pautaExibida?.status === 'encerrada' || estadoTimerVotacao.esgotado) &&
-                placar.totalVotosRegistrados > 0 ? (
+                {placar && mostrarVencedor && placar.totalVotosRegistrados > 0 ? (
                   <span
                     className={`inline-flex items-center gap-1.5 px-3 py-0.5 rounded-md text-xs font-black uppercase tracking-wider shadow-md border ${
                       placar.vencedor === 'SIM'
@@ -576,38 +698,18 @@ export default function PaginaTelao() {
               </h1>
             </div>
 
-            {/* Centro: Contador Regressivo de Deliberação (Padrão 02:00) */}
-            <div
-              className={`px-3 py-1.5 rounded-xl border flex items-center gap-2.5 tabular-nums transition-colors ${
-                estadoTimerVotacao.esgotado
-                  ? 'bg-rose-950/90 border-rose-500 text-rose-200 animate-pulse'
-                  : estadoTimerVotacao.alertaFinal
-                    ? 'bg-amber-950/90 border-amber-400 text-amber-200 animate-pulse'
-                    : estadoTimerVotacao.rodando
-                      ? 'bg-emerald-950/75 border-emerald-500/60 text-emerald-200'
-                      : 'bg-slate-900 border-slate-700 text-slate-300'
-              }`}
-            >
-              <Timer className="w-5 h-5 text-milano-gold shrink-0" />
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider opacity-85">
-                  {estadoTimerVotacao.esgotado
-                    ? 'Tempo Esgotado'
-                    : estadoTimerVotacao.rodando
-                      ? 'Tempo de Votação'
-                      : 'Timer Votação'}
-                </p>
-                <p className="text-xl 2xl:text-2xl font-black font-mono leading-none text-white">
-                  {estadoTimerVotacao.formatado}
-                </p>
-              </div>
-            </div>
+            {/* Centro: Widget Isolado do Contador Regressivo de Deliberação */}
+            <TelaoTimerVotacao
+              timerDurationSeconds={config.timer_duration_seconds}
+              timerStartedAt={config.timer_started_at}
+              timerRunning={config.timer_running}
+              serverOffsetMs={serverOffsetMs}
+              onEsgotadoChange={setTimerEsgotado}
+            />
 
             {/* Direita: Placar Compacto de Alto Contraste */}
             {placar ? (
               (() => {
-                const mostrarVencedor =
-                  pautaExibida?.status === 'encerrada' || estadoTimerVotacao.esgotado;
                 const simVenceu = mostrarVencedor && placar.vencedor === 'SIM';
                 const naoVenceu = mostrarVencedor && placar.vencedor === 'NAO';
 
@@ -678,9 +780,7 @@ export default function PaginaTelao() {
                         <p className="text-lg sm:text-xl 2xl:text-2xl font-black font-mono text-amber-100 leading-tight">
                           {placar.naoVotaram}
                         </p>
-                        <span className="text-[10px] font-semibold text-amber-300/80">
-                          Abst.
-                        </span>
+                        <span className="text-[10px] font-semibold text-amber-300/80">Abst.</span>
                       </div>
                     </div>
                   </div>
@@ -690,77 +790,86 @@ export default function PaginaTelao() {
           </div>
         </section>
 
-        {/* PAINEL INTEGRAL RESPONSIVO AGRUPADO POR BLOCO COM MARCA DE PROCURAÇÃO [P] E TELA INTEIRA */}
-        <section className="flex-1 min-h-0 rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3 py-2.5 2xl:px-4 2xl:py-3 flex flex-col overflow-hidden">
-          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-slate-800/90 shrink-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-xs sm:text-sm 2xl:text-base font-extrabold text-white">
-                {modoGrade === 'TODOS_OS_BLOCOS'
-                  ? `Painel Integral em Tempo Real (${metaEscopo.totalBlocos} Blocos • ${metaEscopo.totalUnidades} Unidades)`
-                  : `Unidades Presentes Aptas no Escopo (${unidadesPresentesAptas.length})`}
-              </h2>
+        {/* PAINEL PRINCIPAL COM 3 ABAS + FILTROS (FASE, MÓDULO, BLOCO/APTO) + TELA INTEIRA */}
+        <section className="flex-1 min-h-0 rounded-2xl bg-[#0C0C0D] border border-slate-800 px-3 py-2.5 2xl:px-4 2xl:py-3 flex flex-col overflow-hidden gap-2">
+          {/* Linha 1: Abas de Visualização + Legenda + Botão Tela Inteira */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800/90 shrink-0">
+            <div className="inline-flex flex-wrap items-center p-0.5 rounded-xl bg-slate-900 border border-slate-800 gap-1">
+              <button
+                type="button"
+                onClick={() => setAbaAtiva('PRESENTES_POR_BLOCO')}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition flex items-center gap-1.5 ${
+                  abaAtiva === 'PRESENTES_POR_BLOCO'
+                    ? 'bg-milano-gold text-[#0C0C0D] shadow'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                Presentes por Bloco ({unidadesPresentesFiltradas.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAbaAtiva('TODOS_OS_BLOCOS')}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition flex items-center gap-1.5 ${
+                  abaAtiva === 'TODOS_OS_BLOCOS'
+                    ? 'bg-milano-gold text-[#0C0C0D] shadow'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                Todos os Blocos ({blocosFiltrados.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAbaAtiva('PLACAR_CONSOLIDADO')}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold transition flex items-center gap-1.5 ${
+                  abaAtiva === 'PLACAR_CONSOLIDADO'
+                    ? 'bg-milano-gold text-[#0C0C0D] shadow'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                Placar &amp; Lista
+              </button>
             </div>
 
-            {/* Legenda de Cores Semânticas + Marca de Procuração [P] + Alternador + Botão Tela Inteira */}
-            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 text-[11px] font-bold text-slate-300">
+            {/* Legenda de Cores Semânticas + Botão Tela Inteira */}
+            <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-bold text-slate-300">
               <span className="inline-flex items-center gap-1">
-                <span className="w-3 h-3 rounded-sm bg-emerald-600 border border-emerald-300" />
+                <span className="w-2.5 h-2.5 rounded-sm bg-emerald-600 border border-emerald-300" />
                 SIM
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="w-3 h-3 rounded-sm bg-rose-600 border border-rose-300" />
+                <span className="w-2.5 h-2.5 rounded-sm bg-rose-600 border border-rose-300" />
                 NÃO
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="w-3 h-3 rounded-sm bg-sky-600 border border-sky-300" />
+                <span className="w-2.5 h-2.5 rounded-sm bg-sky-600 border border-sky-300" />
                 CONECTADO
               </span>
               <span className="inline-flex items-center gap-1">
-                <span className="w-3 h-3 rounded-sm bg-violet-600 border border-violet-300" />
-                CONFIRMADO (PORTARIA)
+                <span className="w-2.5 h-2.5 rounded-sm bg-violet-600 border border-violet-300" />
+                PORTARIA
               </span>
               <span className="inline-flex items-center gap-1 text-amber-300">
                 <span className="inline-flex items-center justify-center px-1 py-[1px] rounded bg-amber-300 text-[#0C0C0D] font-black text-[9px] leading-none">
                   P
                 </span>
-                PROCURAÇÃO ({contadoresPresenca.comProcuracao})
+                PROC. ({contadoresPresenca.comProcuracao})
               </span>
-              <span className="inline-flex items-center gap-1 text-slate-500">
-                <span className="w-3 h-3 rounded-sm bg-slate-900 border border-slate-800" />
-                AUSENTE
-              </span>
+              {abaAtiva === 'TODOS_OS_BLOCOS' && (
+                <span className="inline-flex items-center gap-1 text-slate-500">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-slate-900 border border-slate-800" />
+                  AUSENTE
+                </span>
+              )}
 
-              <div className="inline-flex items-center p-0.5 rounded-lg bg-slate-900 border border-slate-800 gap-1">
-                <button
-                  type="button"
-                  onClick={() => setModoGrade('TODOS_OS_BLOCOS')}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition flex items-center gap-1 ${
-                    modoGrade === 'TODOS_OS_BLOCOS'
-                      ? 'bg-milano-gold text-[#0C0C0D]'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <LayoutGrid className="w-3 h-3" />
-                  Por Bloco ({metaEscopo.totalBlocos})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setModoGrade('PRESENTES_APTAS')}
-                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
-                    modoGrade === 'PRESENTES_APTAS'
-                      ? 'bg-milano-gold text-[#0C0C0D]'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Apenas Presentes ({unidadesPresentesAptas.length})
-                </button>
-              </div>
-
-              {/* Botão no Canto Superior Direito para Maximizar em Tela Inteira */}
               <button
                 type="button"
                 onClick={alternarMaximizarPainel}
-                title="Maximizar Painel Integral em Tela Inteira"
+                title="Maximizar Painel em Tela Inteira"
                 className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-extrabold uppercase tracking-wide border transition shadow-sm ${
                   painelMaximizado
                     ? 'bg-milano-gold text-[#0C0C0D] border-milano-gold-light'
@@ -770,7 +879,7 @@ export default function PaginaTelao() {
                 {painelMaximizado ? (
                   <>
                     <Minimize2 className="w-3.5 h-3.5" />
-                    <span>Restaurar Painel</span>
+                    <span>Restaurar</span>
                   </>
                 ) : (
                   <>
@@ -782,15 +891,191 @@ export default function PaginaTelao() {
             </div>
           </div>
 
-          {modoGrade === 'TODOS_OS_BLOCOS' ? (
-            /* PAINEL RESPONSIVO AGRUPADO POR BLOCO (ADAPTA A TABLETS, MONITORES E DATASHOWS 4:3 / 16:9) */
+          {/* Linha 2: Filtros Rápidos por Fase, Módulo e Busca por Bloco/Apartamento */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-slate-800/70 shrink-0 text-[11px]">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1 font-bold uppercase tracking-wider text-slate-400">
+                <Filter className="w-3 h-3 text-milano-gold" />
+                Filtros:
+              </span>
+
+              {/* Filtro por Fase */}
+              <div className="inline-flex items-center rounded-lg bg-slate-900 border border-slate-800 p-0.5 gap-0.5">
+                {(['TODAS', 1, 2] as const).map((f) => (
+                  <button
+                    key={String(f)}
+                    type="button"
+                    onClick={() => handleSelecionarFase(f)}
+                    className={`px-2 py-0.5 rounded-md font-bold transition ${
+                      filtroFase === f
+                        ? 'bg-milano-gold text-[#0C0C0D]'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {f === 'TODAS' ? 'Todas Fases' : `Fase ${f}`}
+                  </button>
+                ))}
+              </div>
+
+              {/* Filtro por Módulo */}
+              <div className="inline-flex items-center rounded-lg bg-slate-900 border border-slate-800 p-0.5 gap-0.5">
+                {(['TODOS', 1, 2, 3, 4] as const).map((m) => (
+                  <button
+                    key={String(m)}
+                    type="button"
+                    onClick={() => handleSelecionarModulo(m)}
+                    title={
+                      m === 1
+                        ? 'Módulo 1: Blocos 26 ao 34 (Fase 1)'
+                        : m === 2
+                          ? 'Módulo 2: Blocos 19 ao 25 (Fase 1)'
+                          : m === 3
+                            ? 'Módulo 3: Blocos 01–04 e 09–11 (Fase 2)'
+                            : m === 4
+                              ? 'Módulo 4: Blocos 05–08 e 12–18 (Fase 2)'
+                              : 'Todos os Módulos'
+                    }
+                    className={`px-2 py-0.5 rounded-md font-bold transition ${
+                      filtroModulo === m
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {m === 'TODOS' ? 'Todos Mód.' : `Mód. ${m}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Busca por Bloco / Apartamento + Limpar */}
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1.5 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={buscaUnidade}
+                  onChange={(e) => setBuscaUnidade(e.target.value)}
+                  placeholder="Filtrar Bloco / Apto (ex: 26 101)"
+                  aria-label="Filtrar por Bloco ou Apartamento"
+                  className="w-52 sm:w-60 rounded-lg bg-slate-900 border border-slate-700 pl-8 pr-2.5 py-1 text-[11px] font-mono font-bold text-white placeholder:text-slate-500 focus:border-milano-gold focus:outline-none"
+                />
+              </div>
+
+              {temFiltroAtivo && (
+                <button
+                  type="button"
+                  onClick={limparFiltros}
+                  className="inline-flex items-center gap-1 rounded-lg bg-rose-950/80 border border-rose-500/40 px-2.5 py-1 font-bold text-rose-200 hover:bg-rose-900"
+                >
+                  <X className="w-3 h-3" />
+                  Limpar
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ===================================================================
+              ABA 1: APENAS PRESENTES AGRUPADOS POR BLOCO (Visualização Limpa)
+             =================================================================== */}
+          {abaAtiva === 'PRESENTES_POR_BLOCO' && (
+            <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 custom-scrollbar">
+              {blocosApenasPresentes.length === 0 ? (
+                <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-center text-slate-400 space-y-2">
+                  <Users className="w-10 h-10 text-milano-gold/50" />
+                  <p className="text-base font-bold text-slate-200">
+                    {temFiltroAtivo
+                      ? 'Nenhuma unidade presente corresponde aos filtros selecionados'
+                      : 'Aguardando confirmação de unidades na recepção'}
+                  </p>
+                  {temFiltroAtivo ? (
+                    <button
+                      type="button"
+                      onClick={limparFiltros}
+                      className="rounded-lg bg-milano-gold px-3 py-1.5 text-xs font-black text-[#0C0C0D]"
+                    >
+                      Mostrar Todos os Presentes
+                    </button>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Confirme presença na recepção e acesse{' '}
+                      <span className="font-mono font-extrabold text-milano-gold">
+                        {dominioLegivel}
+                      </span>
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className={`grid ${classesGridPresentesPorBloco} gap-2.5`}>
+                  {blocosApenasPresentes.map((grupo) => (
+                    <div
+                      key={grupo.bloco}
+                      className="rounded-xl border border-milano-gold/45 bg-slate-900/75 p-2.5 flex flex-col gap-2 shadow-sm"
+                    >
+                      <div className="flex items-center justify-between gap-1.5 pb-1.5 border-b border-slate-800">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-mono text-sm 2xl:text-base font-black text-milano-gold">
+                            BLOCO {formatarBloco(grupo.bloco)}
+                          </span>
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-300">
+                            F{grupo.fase}•M{grupo.modulo}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0 font-mono text-[10px] font-black tabular-nums">
+                          {pautaExibida && grupo.votosSim > 0 && (
+                            <span className="rounded bg-emerald-600/30 border border-emerald-400/50 px-1.5 py-0.5 text-emerald-200">
+                              {grupo.votosSim}S
+                            </span>
+                          )}
+                          {pautaExibida && grupo.votosNao > 0 && (
+                            <span className="rounded bg-rose-600/30 border border-rose-400/50 px-1.5 py-0.5 text-rose-200">
+                              {grupo.votosNao}N
+                            </span>
+                          )}
+                          <span className="rounded bg-milano-gold/20 px-1.5 py-0.5 text-milano-gold-light">
+                            {grupo.unidades.length} pres.
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {grupo.unidades.map((u) => {
+                          const ch = chaveUnidade(u.bloco, u.apartamento);
+                          return (
+                            <CelulaUnidadeTelao
+                              key={u.id}
+                              bloco={u.bloco}
+                              apartamento={u.apartamento}
+                              presente={true}
+                              onlineConectado={Boolean(u.online_conectado)}
+                              isConstrutora={u.is_construtora}
+                              comProcuracao={Boolean(u.com_procuracao)}
+                              voto={mapaVotosPauta.get(ch)}
+                              mostrarBlocoPrefix={false}
+                              expandido={true}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ===================================================================
+              ABA 2: GRADE INTEGRAL COMPLETA POR BLOCO (4x4 — 34 Blocos)
+             =================================================================== */}
+          {abaAtiva === 'TODOS_OS_BLOCOS' && (
             <div
               className={`flex-1 min-h-0 grid ${classesGridResponsivoBlocos} auto-rows-fr gap-2 overflow-y-auto pr-0.5 custom-scrollbar`}
             >
-              {metaEscopo.blocos.map((bloco) => {
+              {blocosFiltrados.map((bloco) => {
+                const info = obterInfoBloco(bloco);
                 let presentesNoBloco = 0;
                 let procuracoesNoBloco = 0;
-                for (const apto of TODOS_APARTAMENTOS) {
+                for (const apto of apartamentosFiltrados) {
                   const pr = mapaPresencas.get(chaveUnidade(bloco, apto));
                   if (pr) {
                     presentesNoBloco += 1;
@@ -807,10 +1092,12 @@ export default function PaginaTelao() {
                         : 'bg-slate-950/90 border-slate-800/90'
                     }`}
                   >
-                    {/* Cabeçalho Destacado do Bloco */}
                     <div className="flex items-center justify-between px-1 pb-1 mb-1 border-b border-slate-800/90 shrink-0">
                       <span className="font-mono text-xs 2xl:text-sm font-black tracking-wide text-milano-gold">
-                        BLOCO {formatarBloco(bloco)}
+                        B{formatarBloco(bloco)}{' '}
+                        <span className="text-[9px] font-bold text-slate-400">
+                          F{info.fase}•M{info.modulo}
+                        </span>
                       </span>
                       <div className="flex items-center gap-1">
                         {procuracoesNoBloco > 0 && (
@@ -829,14 +1116,19 @@ export default function PaginaTelao() {
                               : 'text-slate-600'
                           }`}
                         >
-                          {presentesNoBloco}/16
+                          {presentesNoBloco}/{apartamentosFiltrados.length}
                         </span>
                       </div>
                     </div>
 
-                    {/* Grade 4x4 dos 16 Apartamentos do Bloco (101..104, 201..204, 301..304, 401..404) */}
-                    <div className="flex-1 grid grid-cols-4 grid-rows-4 gap-1">
-                      {TODOS_APARTAMENTOS.map((apto) => {
+                    <div
+                      className={`flex-1 grid gap-1 ${
+                        apartamentosFiltrados.length === 1
+                          ? 'grid-cols-1'
+                          : 'grid-cols-4 grid-rows-4'
+                      }`}
+                    >
+                      {apartamentosFiltrados.map((apto) => {
                         const ch = chaveUnidade(bloco, apto);
                         const presenca = mapaPresencas.get(ch);
                         return (
@@ -850,7 +1142,7 @@ export default function PaginaTelao() {
                             comProcuracao={Boolean(presenca?.com_procuracao)}
                             voto={mapaVotosPauta.get(ch)}
                             mostrarBlocoPrefix={false}
-                            expandido={false}
+                            expandido={apartamentosFiltrados.length === 1}
                           />
                         );
                       })}
@@ -859,41 +1151,125 @@ export default function PaginaTelao() {
                 );
               })}
             </div>
-          ) : (
-            /* MODO FOCADO: APENAS UNIDADES PRESENTES APTAS */
-            <div className="flex-1 overflow-y-auto custom-scrollbar pr-1">
-              {unidadesPresentesAptas.length === 0 ? (
-                <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center text-slate-500 space-y-2">
-                  <Users className="w-10 h-10 text-milano-gold/50" />
-                  <p className="text-base font-semibold text-slate-300">
-                    Aguardando confirmação de unidades para este escopo
-                  </p>
-                  <p className="text-xs text-slate-400">
-                    Assim que a portaria confirmar a entrada ou o morador validar em{' '}
-                    <span className="font-mono font-extrabold text-milano-gold">
-                      {dominioLegivel}
-                    </span>
-                    , as unidades aparecerão instantaneamente aqui.
-                  </p>
+          )}
+
+          {/* ===================================================================
+              ABA 3: PLACAR CONSOLIDADO GIGANTE + LISTA COMPACTA DE PRESENTES
+             =================================================================== */}
+          {abaAtiva === 'PLACAR_CONSOLIDADO' && (
+            <div className="flex-1 min-h-0 flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar">
+              {placar ? (
+                <div className="rounded-2xl bg-slate-900/80 border border-slate-800 p-4 space-y-3 shrink-0 tabular-nums">
+                  {/* Barra Proporcional Gigante */}
+                  <div className="h-6 w-full rounded-xl bg-slate-950 border border-slate-800 overflow-hidden flex">
+                    {placar.sim > 0 && (
+                      <div
+                        className="bg-emerald-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-slate-950"
+                        style={{ width: `${placar.pctSim}%` }}
+                      >
+                        {placar.pctSim >= 10 ? `SIM ${placar.pctSim.toFixed(0)}%` : ''}
+                      </div>
+                    )}
+                    {placar.nao > 0 && (
+                      <div
+                        className="bg-rose-500 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-white"
+                        style={{ width: `${placar.pctNao}%` }}
+                      >
+                        {placar.pctNao >= 10 ? `NÃO ${placar.pctNao.toFixed(0)}%` : ''}
+                      </div>
+                    )}
+                    {placar.naoVotaram > 0 && (
+                      <div
+                        className="bg-amber-500/40 h-full transition-all duration-500 flex items-center justify-center text-xs font-black text-amber-100"
+                        style={{ width: `${placar.pctNaoVotaram}%` }}
+                      >
+                        {placar.pctNaoVotaram >= 12
+                          ? `ABST. ${placar.pctNaoVotaram.toFixed(0)}%`
+                          : ''}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div
+                      className={`rounded-2xl p-4 border-2 ${
+                        mostrarVencedor && placar.vencedor === 'SIM'
+                          ? 'bg-emerald-900/70 border-milano-gold ring-2 ring-emerald-400/50'
+                          : 'bg-emerald-950/60 border-emerald-500/50'
+                      }`}
+                    >
+                      <p className="text-xs font-black uppercase tracking-wider text-emerald-300">
+                        Votos SIM (Aprovar)
+                      </p>
+                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
+                        {placar.sim}
+                      </p>
+                      <p className="mt-1 text-xs font-mono font-bold text-emerald-200">
+                        {placar.pctSimValidos.toFixed(1)}% válidos • {placar.pctSim.toFixed(1)}%
+                        dos presentes
+                      </p>
+                    </div>
+
+                    <div
+                      className={`rounded-2xl p-4 border-2 ${
+                        mostrarVencedor && placar.vencedor === 'NAO'
+                          ? 'bg-rose-900/70 border-milano-gold ring-2 ring-rose-400/50'
+                          : 'bg-rose-950/60 border-rose-500/50'
+                      }`}
+                    >
+                      <p className="text-xs font-black uppercase tracking-wider text-rose-300">
+                        Votos NÃO (Rejeitar)
+                      </p>
+                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-white">
+                        {placar.nao}
+                      </p>
+                      <p className="mt-1 text-xs font-mono font-bold text-rose-200">
+                        {placar.pctNaoValidos.toFixed(1)}% válidos • {placar.pctNao.toFixed(1)}%
+                        dos presentes
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl p-4 border-2 bg-amber-950/50 border-amber-400/45">
+                      <p className="text-xs font-black uppercase tracking-wider text-amber-300">
+                        Não Votaram (Abstenção)
+                      </p>
+                      <p className="mt-1 text-4xl 2xl:text-5xl font-black font-mono text-amber-100">
+                        {placar.naoVotaram}
+                      </p>
+                      <p className="mt-1 text-xs font-mono font-bold text-amber-200">
+                        {placar.pctNaoVotaram.toFixed(1)}% de {placar.presentesAptos} presentes
+                        aptos
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-2">
-                  {unidadesPresentesAptas.map((u) => (
-                    <CelulaUnidadeTelao
-                      key={u.id}
-                      bloco={u.bloco}
-                      apartamento={u.apartamento}
-                      presente={true}
-                      onlineConectado={Boolean(u.online_conectado)}
-                      isConstrutora={u.is_construtora}
-                      comProcuracao={Boolean(u.com_procuracao)}
-                      voto={mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento))}
-                      mostrarBlocoPrefix={true}
-                      expandido={true}
-                    />
-                  ))}
-                </div>
-              )}
+              ) : null}
+
+              <div className="space-y-2">
+                <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-400">
+                  Unidades Presentes ({unidadesPresentesFiltradas.length})
+                </h3>
+                {unidadesPresentesFiltradas.length === 0 ? (
+                  <p className="text-xs text-slate-500">Nenhuma unidade presente neste filtro.</p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12 gap-2">
+                    {unidadesPresentesFiltradas.map((u) => (
+                      <CelulaUnidadeTelao
+                        key={u.id}
+                        bloco={u.bloco}
+                        apartamento={u.apartamento}
+                        presente={true}
+                        onlineConectado={Boolean(u.online_conectado)}
+                        isConstrutora={u.is_construtora}
+                        comProcuracao={Boolean(u.com_procuracao)}
+                        voto={mapaVotosPauta.get(chaveUnidade(u.bloco, u.apartamento))}
+                        mostrarBlocoPrefix={true}
+                        expandido={true}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </section>
